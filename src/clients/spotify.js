@@ -1,5 +1,4 @@
-// src/clients/spotify.js
-const { norm, tokens, jaccardTitle } = require('../util/text');
+const { norm, tokens, jaccardTitle, hasUsableTokens } = require('../util/text');
 
 // Canonicalize a Spotify playlist item (unchanged)
 function canonicalFromPlaylistItem(it) {
@@ -154,7 +153,11 @@ function isExactTitleMatch(coreTitle, spName) {
 
 // ---------- Soft duplicate detection in Spotify playlist ----------
 function findSoftDupeInSpotify(ytItem, spPlaylistItems, { verbose = false, log = console.log } = {}) {
-  const { artistGuess, trusted } = deriveArtistGuess(ytItem.title || '', ytItem.channelTitle || '');
+  // If YT title is unintelligible, don't attempt soft-dupe; let the main flow decide (and likely skip).
+  const ytTitle = ytItem.title || '';
+  if (!hasUsableTokens(ytTitle)) return null;
+
+  const { artistGuess, trusted } = deriveArtistGuess(ytTitle, ytItem.channelTitle || '');
   let best = null, bestScore = -Infinity;
 
   for (const it of spPlaylistItems) {
@@ -165,7 +168,7 @@ function findSoftDupeInSpotify(ytItem, spPlaylistItems, { verbose = false, log =
     const artistOK = trusted ? (mvTitle ? true : artistAligned(artistGuess, { artists: it.artists?.map(n => ({ name: n })) || [] })) : true;
     if (!artistOK) continue;
 
-    const ytCore = smartSplitArtistTitle(ytItem.title || '', ytItem.channelTitle || '').titleCore || ytItem.title || '';
+    const ytCore = smartSplitArtistTitle(ytTitle, ytItem.channelTitle || '').titleCore || ytTitle;
     const sim = jaccardTitle(ytCore, it.title || '');
     if (sim < 0.45) continue;
 
@@ -183,11 +186,19 @@ function findSoftDupeInSpotify(ytItem, spPlaylistItems, { verbose = false, log =
 async function findBestSpotifyForYouTubeVideo(sp, ytItem, { slackSec = 7, verbose = false, log = console.log } = {}) {
   const split = smartSplitArtistTitle(ytItem.title || '', ytItem.channelTitle || '');
   const titleCore = split.titleCore || (ytItem.title || '');
+
+  // Intelligibility guard: if the core title isn't usable, skip
+  if (!hasUsableTokens(titleCore)) {
+    if (verbose) log(`    YT→SP guard: unintelligible_query → skip`);
+    return { best: null, reason: 'unintelligible_query', inspected: 0, escalated: false };
+  }
+
   const { artistGuess, trusted } = deriveArtistGuess(ytItem.title || '', ytItem.channelTitle || '');
 
+  // Build queries in order of confidence, but only include intelligible ones
   const queries = [];
-  if (trusted && artistGuess) queries.push(`${artistGuess} ${titleCore}`);
-  if (!trusted && split.artistSide) queries.push(`${split.artistSide} ${titleCore}`);
+  if (trusted && artistGuess && hasUsableTokens(artistGuess, titleCore)) queries.push(`${artistGuess} ${titleCore}`);
+  if (!trusted && split.artistSide && hasUsableTokens(split.artistSide, titleCore)) queries.push(`${split.artistSide} ${titleCore}`);
   queries.push(titleCore);
 
   if (verbose) {
@@ -297,9 +308,10 @@ async function findBestSpotifyForYouTubeVideo(sp, ytItem, { slackSec = 7, verbos
     };
   }
 
-  // Otherwise, score and show top-3 for visibility
+  // Otherwise, score and choose best (MV gets a bump)
   const scored = pool.map(t => ({ t, sc: score(t) }))
                      .sort((a, b) => b.sc - a.sc);
+
   if (verbose) {
     for (const { t, sc } of scored.slice(0, 3)) {
       const mv = isMusicVideoName(t.name || '');

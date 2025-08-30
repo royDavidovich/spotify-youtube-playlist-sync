@@ -29,4 +29,13 @@ function jaccardTitle(a, b) {
   return uni ? inter / uni : 0;
 }
 
-module.exports = { norm, tokens, jaccardTitle, STOPWORDS };
+function hasUsableTokens(...parts) {
+  const joined = parts.filter(Boolean).join(' ').trim();
+  if (!joined) return false;
+  const t = tokens(joined);
+  if (t.length > 0) return true;
+  const letters = (norm(joined).match(/[\p{L}\p{N}]/gu) || []).length;
+  return letters >= 2;
+}
+
+module.exports = { norm, tokens, jaccardTitle, STOPWORDS, hasUsableTokens };

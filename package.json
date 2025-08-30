@@ -6,7 +6,6 @@
   "scripts": {
     "start": "node src/index.js",
     "start:dry": "node src/index.js --dry-run",
-    "health": "node src/health.js",
     "auth:spotify": "node src/auth/getSpotifyRefreshToken.js",
     "auth:youtube": "node src/auth/getYouTubeRefreshToken.js"
   },

@@ -1,6 +1,7 @@
+// src/clients/spotify.js
 const { norm, tokens, jaccardTitle } = require('../util/text');
 
-// Canonicalize a Spotify playlist item you already had:
+// Canonicalize a Spotify playlist item (unchanged)
 function canonicalFromPlaylistItem(it) {
   const t = it.track;
   if (!t) return null;
@@ -26,7 +27,8 @@ async function getAllPlaylistItems(sp, playlistId) {
   return items.map(canonicalFromPlaylistItem).filter(Boolean);
 }
 
-// ---------- Helpers for YT → SP ----------
+// ---------- Shared helpers for YT → SP ----------
+
 function relaxedDurationOk(trackMs, candMs) {
   if (!trackMs || !candMs) return false;
   const slackMs = Math.max(12000, Math.floor(0.04 * trackMs)); // max(12s, 4%)
@@ -39,18 +41,34 @@ function durationClose(trackMs, candMs, slackSec = 7) {
   return Math.abs(trackMs - candMs) <= slack;
 }
 
-// Pull a best-guess artist/title from a YouTube video
-function extractArtistFromChannel(channelTitle) {
-  const t = channelTitle || '';
-  const m = t.match(/^(.*)\s+-\s+topic$/i);
-  if (m) return m[1].trim();
-  const n = t.replace(/\bvevo\b/i, '').trim();
-  return n || null;
-}
 function splitArtistTitleFromVideo(ytTitle) {
-  const m = (ytTitle || '').match(/^(.*?)[\s–-]{1,3}(.*)$/); // dash/en dash
+  const m = (ytTitle || '').match(/^(.*?)[\s–-]{1,3}(.*)$/); // dash or en-dash
   if (m) return { artist: m[1].trim(), title: m[2].trim() };
   return { artist: null, title: ytTitle || '' };
+}
+
+// Only trust the channel when it's clearly an artist channel
+function deriveArtistGuess(ytTitle, channelTitle) {
+  const ch = channelTitle || '';
+  // "Artist - Topic"
+  const mTopic = ch.match(/^(.*)\s+-\s+topic$/i);
+  if (mTopic) {
+    const artist = mTopic[1].trim();
+    if (artist && !/^various artists$/i.test(artist)) {
+      return { artistGuess: artist, trusted: true };
+    }
+  }
+  // VEVO channels (e.g., "ArtistVEVO" or "Artist VEVO")
+  if (/\bvevo\b/i.test(ch)) {
+    const artist = ch.replace(/\bvevo\b/ig, '').trim();
+    if (artist) return { artistGuess: artist, trusted: true };
+  }
+  // Title of form "Artist - Title" is also a trusted source
+  const { artist } = splitArtistTitleFromVideo(ytTitle || '');
+  if (artist) return { artistGuess: artist, trusted: true };
+
+  // Otherwise, don't trust the channel as artist
+  return { artistGuess: null, trusted: false };
 }
 
 function versionTokens(s) {
@@ -64,13 +82,6 @@ function versionTokens(s) {
   };
 }
 
-function artistAligned(artistGuess, spTrack) {
-  if (!artistGuess) return true; // if unknown, don't block
-  const a = norm(artistGuess);
-  const names = (spTrack.artists || []).map(x => norm(x.name || x));
-  return names.some(n => n.includes(a) || a.includes(n));
-}
-
 function titleCoverageOk(ytCoreTitle, spName) {
   const need = new Set(tokens(ytCoreTitle));
   const have = new Set(tokens(spName));
@@ -78,30 +89,49 @@ function titleCoverageOk(ytCoreTitle, spName) {
   return true;
 }
 
-// Soft duplicate detection against an existing Spotify playlist (looser than hard filters)
+function artistTokenSet(name) {
+  const t = tokens(name);
+  // If tokens end up empty (e.g., very short names like "U2"), fallback to whole normalized string
+  if (!t.length) return new Set([norm(name)]);
+  return new Set(t);
+}
+
+function artistAligned(artistGuess, spTrack) {
+  if (!artistGuess) return true; // if unknown/untrusted, don't block
+  const guessSet = artistTokenSet(artistGuess);
+  for (const a of (spTrack.artists || [])) {
+    const aSet = artistTokenSet(a.name || a);
+    for (const tok of guessSet) {
+      if (aSet.has(tok)) return true; // token overlap (word-level), not substring
+    }
+  }
+  return false;
+}
+
+// ---------- Soft duplicate detection in Spotify playlist ----------
 function findSoftDupeInSpotify(ytItem, spPlaylistItems) {
-  const { artist: tArtist, title: tTitle } = splitArtistTitleFromVideo(ytItem.title || '');
-  const artistGuess = tArtist || extractArtistFromChannel(ytItem.channelTitle || '');
+  const { artistGuess, trusted } = deriveArtistGuess(ytItem.title || '', ytItem.channelTitle || '');
   let best = null, bestScore = -Infinity;
 
   for (const it of spPlaylistItems) {
     if (!relaxedDurationOk(it.durationMs, ytItem.durationMs)) continue;
-    const artistOK = artistAligned(artistGuess, { artists: it.artists?.map(n => ({ name: n })) || [] });
+    // Only enforce artist alignment if we truly trust the guess
+    const artistOK = trusted ? artistAligned(artistGuess, { artists: it.artists?.map(n => ({ name: n })) || [] }) : true;
     if (!artistOK) continue;
-    const sim = jaccardTitle(tTitle || ytItem.title || '', it.title || '');
+
+    const sim = jaccardTitle(splitArtistTitleFromVideo(ytItem.title || '').title || ytItem.title || '', it.title || '');
     if (sim < 0.45) continue;
+
     const score = (artistOK ? 1 : 0) + sim;
     if (score > bestScore) { best = it; bestScore = score; }
   }
   return best; // canonical sp item or null
 }
 
-// Find the best Spotify track for a given YouTube video (K=5, escalate→10)
-// Mirrors the spirit of your YT side ranking (duration/artist/title/popularity).
+// ---------- Main: find best Spotify track for a YT video ----------
 async function findBestSpotifyForYouTubeVideo(sp, ytItem, { slackSec = 7 } = {}) {
   const { artist: titleArtist, title: titleCore } = splitArtistTitleFromVideo(ytItem.title || '');
-  const channelArtist = extractArtistFromChannel(ytItem.channelTitle || '');
-  const artistGuess = titleArtist || channelArtist;
+  const { artistGuess, trusted } = deriveArtistGuess(ytItem.title || '', ytItem.channelTitle || '');
   const coreTitle = titleCore || ytItem.title || '';
 
   const queries = [];
@@ -111,6 +141,7 @@ async function findBestSpotifyForYouTubeVideo(sp, ytItem, { slackSec = 7 } = {})
   const seenIds = new Set();
   let candidates = [];
 
+  // Aggregate up to 10 results per query (artist+title, then title-only)
   for (const q of queries) {
     const res = await sp.searchTracks(q, { limit: 10 });
     const items = res.body.tracks?.items || [];
@@ -120,7 +151,9 @@ async function findBestSpotifyForYouTubeVideo(sp, ytItem, { slackSec = 7 } = {})
     }
   }
 
-  if (!candidates.length) return { best: null, reason: 'no_spotify_results', inspected: 0, escalated: false };
+  if (!candidates.length) {
+    return { best: null, reason: 'no_spotify_results', inspected: 0, escalated: false };
+  }
 
   function candToObj(t) {
     return {
@@ -138,6 +171,7 @@ async function findBestSpotifyForYouTubeVideo(sp, ytItem, { slackSec = 7 } = {})
   const hardFilter = (t) => {
     if (!durationClose(ytItem.durationMs, t.duration_ms, slackSec)) return false;
 
+    // Require version alignment
     const sTokens = versionTokens(t.name || '');
     const versionMismatch =
       (ytTokens.hasLive && !sTokens.hasLive) ||
@@ -147,8 +181,10 @@ async function findBestSpotifyForYouTubeVideo(sp, ytItem, { slackSec = 7 } = {})
       (ytTokens.hasRemaster && !sTokens.hasRemaster);
     if (versionMismatch) return false;
 
-    if (!artistAligned(artistGuess, t)) return false;
+    // Only enforce artist match when the guess is trusted
+    if (trusted && !artistAligned(artistGuess, t)) return false;
 
+    // Title token coverage (YT core tokens should appear in Spotify name)
     if (!titleCoverageOk(coreTitle, t.name || '')) return false;
 
     return true;
@@ -157,9 +193,9 @@ async function findBestSpotifyForYouTubeVideo(sp, ytItem, { slackSec = 7 } = {})
   function score(t) {
     const sTitle = jaccardTitle(coreTitle, t.name || '');
     const sDur = 1 - (Math.abs((t.duration_ms || 0) - (ytItem.durationMs || 0)) / (slackSec * 1000));
-    const sArtist = artistAligned(artistGuess, t) ? 1 : 0;
+    const sArtist = (trusted && artistAligned(artistGuess, t)) ? 1 : 0;
     const sPop = (t.popularity || 0) / 100;
-    return (sTitle * 1.6) + (sDur * 1.2) + (sArtist * 1.0) + (sPop * 0.6);
+    return (sTitle * 1.6) + (sDur * 1.6) + (sArtist * 1.0) + (sPop * 0.6);
   }
 
   let pool = all.slice(0, 5).filter(hardFilter);
@@ -169,7 +205,12 @@ async function findBestSpotifyForYouTubeVideo(sp, ytItem, { slackSec = 7 } = {})
     escalated = true;
   }
   if (pool.length === 0) {
-    return { best: null, reason: 'no_candidate_passed_filters', inspected: escalated ? Math.min(10, all.length) : Math.min(5, all.length), escalated };
+    return {
+      best: null,
+      reason: 'no_candidate_passed_filters',
+      inspected: escalated ? Math.min(10, all.length) : Math.min(5, all.length),
+      escalated
+    };
   }
 
   let best = null, bestScore = -Infinity;
@@ -177,7 +218,13 @@ async function findBestSpotifyForYouTubeVideo(sp, ytItem, { slackSec = 7 } = {})
     const sc = score(t);
     if (sc > bestScore) { best = t; bestScore = sc; }
   }
-  return { best, reason: 'ok', inspected: escalated ? Math.min(10, all.length) : Math.min(5, all.length), escalated, score: bestScore };
+  return {
+    best,
+    reason: best ? 'ok' : 'no_best',
+    inspected: escalated ? Math.min(10, all.length) : Math.min(5, all.length),
+    escalated,
+    score: best ? bestScore : undefined
+  };
 }
 
 // Convenience: add plain track IDs to a playlist

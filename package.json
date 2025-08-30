@@ -1,11 +1,14 @@
 {
   "name": "spotify-youtube-playlist-sync",
   "version": "1.0.0",
-  "type":"commonjs",
+  "type": "commonjs",
   "main": "index.js",
   "scripts": {
-    "start": "node src/index.js --dry-run",
-    "start:prod": "node src/index.js"
+    "start": "node src/index.js",
+    "start:dry": "node src/index.js --dry-run",
+    "health": "node src/health.js",
+    "auth:spotify": "node src/auth/getSpotifyRefreshToken.js",
+    "auth:youtube": "node src/auth/getYouTubeRefreshToken.js"
   },
   "repository": {
     "type": "git",

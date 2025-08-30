@@ -7,9 +7,11 @@
 //   --mode=yt2sp  | --yt2sp
 // If no mode passed and interactive TTY: shows a 1/2/3 menu.
 //
-// Behavior tweak for BOTH:
-// - After SP→YT finishes, we bump YT→SP's recent window by the number of videos
-//   actually added in the first leg, so we don't miss items displaced by new additions.
+// BOTH tweak:
+// - After SP→YT finishes, bump YT→SP's recent window by the number of
+//   actual additions from the first leg.
+//
+// New: Adds are applied **backwards** (oldest→newest) to preserve order.
 
 require('dotenv').config();
 const readline = require('readline');
@@ -91,7 +93,7 @@ function sortByAddedAtDesc(items) {
 async function runSp2Yt({ dryRun }) {
   const [sp, yt] = await Promise.all([getSpotify(), getYouTube()]);
 
-  let addedCountTotal = 0; // we'll return this for BOTH-mode bump
+  let addedCountTotal = 0; // returned for BOTH-mode bump
 
   for (const pair of CONFIG.pairs) {
     const spId = pair.spotifyPlaylistId;
@@ -185,23 +187,32 @@ async function runSp2Yt({ dryRun }) {
       console.log('  (Nothing to do)');
     }
 
-    // Apply
+    // Apply — add **backwards** (oldest→newest)
     let addedThisPair = 0;
     if (!dryRun) {
-      for (const p of plan) {
+      const adds = plan.filter(p => p.action === 'add');
+      const maps = plan.filter(p => p.action === 'map-only');
+
+      // Add in reverse plan order to preserve final ordering
+      for (const p of adds.slice().reverse()) {
         try {
-          if (p.action === 'add') {
-            await insertIntoPlaylist(yt, ytId, p.videoId);
-            ytVideoSet.add(p.videoId);
-            cache.map[p.s.id] = p.videoId;
-            addedThisPair += 1;
-            console.log(`  ✓ Added → ${p.videoId}`);
-          } else if (p.action === 'map-only') {
-            cache.map[p.s.id] = p.videoId;
-            console.log('  ✓ Mapped only');
-          }
+          await insertIntoPlaylist(yt, ytId, p.videoId);
+          ytVideoSet.add(p.videoId);
+          cache.map[p.s.id] = p.videoId;
+          addedThisPair += 1;
+          console.log(`  ✓ Added → ${p.videoId}`);
         } catch (e) {
-          console.warn(`  ! Failed for ${p.s.title}: ${e.message}`);
+          console.warn(`  ! Failed to add ${p.s.title}: ${e.message}`);
+        }
+      }
+
+      // Map-only (order irrelevant)
+      for (const p of maps) {
+        try {
+          cache.map[p.s.id] = p.videoId;
+          console.log('  ✓ Mapped only');
+        } catch (e) {
+          console.warn(`  ! Failed to map ${p.s.title}: ${e.message}`);
         }
       }
 
@@ -218,7 +229,6 @@ async function runSp2Yt({ dryRun }) {
     addedCountTotal += addedThisPair;
   }
 
-  // Return how many videos were actually added (used to bump YT→SP window in BOTH mode)
   return { addedCount: addedCountTotal };
 }
 
@@ -321,21 +331,30 @@ async function runYt2Sp({ dryRun, recentLimitOverride }) {
       console.log('  (Nothing to do)');
     }
 
-    // Apply
+    // Apply — add **backwards** (oldest→newest)
     if (!dryRun) {
-      for (const p of plan) {
+      const adds = plan.filter(p => p.action === 'add');
+      const maps = plan.filter(p => p.action === 'map-only');
+
+      // Add in reverse plan order to preserve final ordering
+      for (const p of adds.slice().reverse()) {
         try {
-          if (p.action === 'add') {
-            await addTracksToPlaylist(sp, spId, [p.spTrackId]);
-            spTrackSet.add(p.spTrackId);
-            cache.map[p.spTrackId] = p.v.id; // record mapping
-            console.log(`  ✓ Added → spotify:track:${p.spTrackId}`);
-          } else if (p.action === 'map-only') {
-            cache.map[p.spTrackId] = p.v.id; // record mapping
-            console.log('  ✓ Mapped only');
-          }
+          await addTracksToPlaylist(sp, spId, [p.spTrackId]);
+          spTrackSet.add(p.spTrackId);
+          cache.map[p.spTrackId] = p.v.id; // record mapping
+          console.log(`  ✓ Added → spotify:track:${p.spTrackId}`);
         } catch (e) {
-          console.warn(`  ! Failed for ${p.v.title}: ${e.message}`);
+          console.warn(`  ! Failed to add ${p.v.title}: ${e.message}`);
+        }
+      }
+
+      // Map-only
+      for (const p of maps) {
+        try {
+          cache.map[p.spTrackId] = p.v.id;
+          console.log('  ✓ Mapped only');
+        } catch (e) {
+          console.warn(`  ! Failed to map ${p.v.title}: ${e.message}`);
         }
       }
 
@@ -344,7 +363,7 @@ async function runYt2Sp({ dryRun, recentLimitOverride }) {
       const newSeen = Array.from(new Set([
         ...seen,
         ...spItemsAll.map(i => i.id),
-        ...plan.filter(p => p.action === 'add').map(p => p.spTrackId)
+        ...adds.map(p => p.spTrackId)
       ]));
       cache.seenTrackIds = newSeen;
       cache.lastSync = new Date().toISOString();

@@ -11,7 +11,8 @@
 // - After SP→YT finishes, bump YT→SP's recent window by the number of
 //   actual additions from the first leg.
 //
-// New: Adds are applied **backwards** (oldest→newest) to preserve order.
+// Adds are applied **backwards** (oldest→newest).
+// NEW: Per-pair "nickname" prefix in all logs.
 
 require('dotenv').config();
 const readline = require('readline');
@@ -88,6 +89,16 @@ function sortByAddedAtDesc(items) {
     return tb - ta;
   });
 }
+function makePairLabel(pair) {
+  const { nickname, spotifyPlaylistId: spId, youtubePlaylistId: ytId } = pair;
+  if (nickname && nickname.trim()) return nickname.trim();
+  const spShort = (spId || 'sp').slice(0, 6);
+  const ytShort = (ytId || 'yt').slice(0, 6);
+  return `sp:${spShort}→yt:${ytShort}`;
+}
+function makeLogger(label) {
+  return (...args) => console.log(`[${label}]`, ...args);
+}
 
 // ====================== SPOTIFY → YOUTUBE ======================
 async function runSp2Yt({ dryRun }) {
@@ -98,13 +109,15 @@ async function runSp2Yt({ dryRun }) {
   for (const pair of CONFIG.pairs) {
     const spId = pair.spotifyPlaylistId;
     const ytId = pair.youtubePlaylistId;
+    const label = makePairLabel(pair);
+    const log = makeLogger(label);
 
     if (!spId || !ytId || spId === 'SPOTIFY_PLAYLIST_ID' || ytId === 'YOUTUBE_PLAYLIST_ID') {
-      console.log('⚠️  Set real playlist IDs in config.json');
+      log('⚠️  Set real playlist IDs in config.json');
       continue;
     }
 
-    console.log(`\n🎯 Syncing Spotify (${spId}) → YouTube (${ytId}) ${dryRun ? '[DRY-RUN]' : ''}`);
+    log(`🎯 Syncing Spotify (${spId}) → YouTube (${ytId}) ${dryRun ? '[DRY-RUN]' : ''}`);
 
     const cache = loadCache(spId); // { lastSync, seenTrackIds[], map{} }
     if (!cache.map) cache.map = {};
@@ -121,9 +134,9 @@ async function runSp2Yt({ dryRun }) {
     const spItemsSorted = sortByAddedAtDesc(spItemsAll);
     const spItems = spItemsSorted.slice(0, Math.min(RECENT_SPOTIFY_LIMIT, spItemsSorted.length));
 
-    console.log(`• Spotify tracks total: ${spItemsAll.length}`);
-    console.log(`• YouTube videos total: ${ytItems.length}`);
-    console.log(`• Limiting to last ${RECENT_SPOTIFY_LIMIT} Spotify additions → ${spItems.length} to inspect`);
+    log(`• Spotify tracks total: ${spItemsAll.length}`);
+    log(`• YouTube videos total: ${ytItems.length}`);
+    log(`• Limiting to last ${RECENT_SPOTIFY_LIMIT} Spotify additions → ${spItems.length} to inspect`);
 
     // Determine candidates within last-L:
     const candidates = [];
@@ -140,7 +153,7 @@ async function runSp2Yt({ dryRun }) {
       }
     }
 
-    console.log(`• Candidates to process (within last ${RECENT_SPOTIFY_LIMIT}): ${candidates.length}`);
+    log(`• Candidates to process (within last ${RECENT_SPOTIFY_LIMIT}): ${candidates.length}`);
 
     const plan = [];
     for (const s of candidates) {
@@ -173,18 +186,18 @@ async function runSp2Yt({ dryRun }) {
     // Show plan
     if (plan.length) {
       for (const p of plan) {
-        const label = p.escalated ? ' (escalated to 10)' : '';
+        const labelEsc = p.escalated ? ' (escalated to 10)' : '';
         if (p.action === 'add') {
-          console.log(`  + ADD  ${p.s.artists[0] || ''} - ${p.s.title}  →  ${p.videoId}${label}`);
+          log(`  + ADD  ${p.s.artists[0] || ''} - ${p.s.title}  →  ${p.videoId}${labelEsc}`);
         } else if (p.action === 'map-only') {
           const why = p.reason ? ` [${p.reason}]` : '';
-          console.log(`  = MAP  ${p.s.artists[0] || ''} - ${p.s.title}  ↔  ${p.videoId}${why}${label}`);
+          log(`  = MAP  ${p.s.artists[0] || ''} - ${p.s.title}  ↔  ${p.videoId}${why}${labelEsc}`);
         } else {
-          console.log(`  ~ SKIP ${p.s.artists[0] || ''} - ${p.s.title}  (${p.reason})${label}`);
+          log(`  ~ SKIP ${p.s.artists[0] || ''} - ${p.s.title}  (${p.reason})${labelEsc}`);
         }
       }
     } else {
-      console.log('  (Nothing to do)');
+      log('  (Nothing to do)');
     }
 
     // Apply — add **backwards** (oldest→newest)
@@ -193,26 +206,24 @@ async function runSp2Yt({ dryRun }) {
       const adds = plan.filter(p => p.action === 'add');
       const maps = plan.filter(p => p.action === 'map-only');
 
-      // Add in reverse plan order to preserve final ordering
       for (const p of adds.slice().reverse()) {
         try {
           await insertIntoPlaylist(yt, ytId, p.videoId);
           ytVideoSet.add(p.videoId);
           cache.map[p.s.id] = p.videoId;
           addedThisPair += 1;
-          console.log(`  ✓ Added → ${p.videoId}`);
+          log(`  ✓ Added → ${p.videoId}`);
         } catch (e) {
-          console.warn(`  ! Failed to add ${p.s.title}: ${e.message}`);
+          log(`  ! Failed to add ${p.s.title}: ${e.message}`);
         }
       }
 
-      // Map-only (order irrelevant)
       for (const p of maps) {
         try {
           cache.map[p.s.id] = p.videoId;
-          console.log('  ✓ Mapped only');
+          log('  ✓ Mapped only');
         } catch (e) {
-          console.warn(`  ! Failed to map ${p.s.title}: ${e.message}`);
+          log(`  ! Failed to map ${p.s.title}: ${e.message}`);
         }
       }
 
@@ -221,9 +232,9 @@ async function runSp2Yt({ dryRun }) {
       cache.seenTrackIds = newSeen;
       cache.lastSync = new Date().toISOString();
       saveCache(spId, cache);
-      console.log(`• Cache updated. (+${addedThisPair} additions on YouTube)`);
+      log(`• Cache updated. (+${addedThisPair} additions on YouTube)`);
     } else {
-      console.log('• DRY-RUN: no changes applied. Run without --dry-run to sync.');
+      log('• DRY-RUN: no changes applied. Run without --dry-run to sync.');
     }
 
     addedCountTotal += addedThisPair;
@@ -239,9 +250,11 @@ async function runYt2Sp({ dryRun, recentLimitOverride }) {
   for (const pair of CONFIG.pairs) {
     const spId = pair.spotifyPlaylistId;
     const ytId = pair.youtubePlaylistId;
+    const label = makePairLabel(pair);
+    const log = makeLogger(label);
 
     if (!spId || !ytId || spId === 'SPOTIFY_PLAYLIST_ID' || ytId === 'YOUTUBE_PLAYLIST_ID') {
-      console.log('⚠️  Set real playlist IDs in config.json');
+      log('⚠️  Set real playlist IDs in config.json');
       continue;
     }
 
@@ -249,9 +262,9 @@ async function runYt2Sp({ dryRun, recentLimitOverride }) {
       ? Math.max(0, recentLimitOverride)
       : RECENT_YOUTUBE_LIMIT;
 
-    console.log(`\n🎯 Syncing YouTube (${ytId}) → Spotify (${spId}) ${dryRun ? '[DRY-RUN]' : ''}`);
+    log(`🎯 Syncing YouTube (${ytId}) → Spotify (${spId}) ${dryRun ? '[DRY-RUN]' : ''}`);
     if (effectiveRecent !== RECENT_YOUTUBE_LIMIT) {
-      console.log(`• Adjusted recent window for YT→SP: ${RECENT_YOUTUBE_LIMIT} → ${effectiveRecent}`);
+      log(`• Adjusted recent window for YT→SP: ${RECENT_YOUTUBE_LIMIT} → ${effectiveRecent}`);
     }
 
     const cache = loadCache(spId); // reuse same cache file keyed by Spotify playlist
@@ -274,9 +287,9 @@ async function runYt2Sp({ dryRun, recentLimitOverride }) {
 
     const spTrackSet = new Set(spItemsAll.map(i => i.id));
 
-    console.log(`• YouTube videos total: ${ytItemsAll.length}`);
-    console.log(`• Spotify tracks total: ${spItemsAll.length}`);
-    console.log(`• Limiting to last ${effectiveRecent} YouTube additions → ${ytItems.length} to inspect`);
+    log(`• YouTube videos total: ${ytItemsAll.length}`);
+    log(`• Spotify tracks total: ${spItemsAll.length}`);
+    log(`• Limiting to last ${effectiveRecent} YouTube additions → ${ytItems.length} to inspect`);
 
     const plan = [];
     for (const v of ytItems) {
@@ -317,18 +330,18 @@ async function runYt2Sp({ dryRun, recentLimitOverride }) {
     // Show plan
     if (plan.length) {
       for (const p of plan) {
-        const label = p.escalated ? ' (escalated to 10)' : '';
+        const labelEsc = p.escalated ? ' (escalated to 10)' : '';
         if (p.action === 'add') {
-          console.log(`  + ADD  ${p.v.title}  →  spotify:track:${p.spTrackId}${label}`);
+          log(`  + ADD  ${p.v.title}  →  spotify:track:${p.spTrackId}${labelEsc}`);
         } else if (p.action === 'map-only') {
           const why = p.reason ? ` [${p.reason}]` : '';
-          console.log(`  = MAP  ${p.v.title}  ↔  spotify:track:${p.spTrackId}${why}${label}`);
+          log(`  = MAP  ${p.v.title}  ↔  spotify:track:${p.spTrackId}${why}${labelEsc}`);
         } else {
-          console.log(`  ~ SKIP ${p.v.title}  (${p.reason})${label}`);
+          log(`  ~ SKIP ${p.v.title}  (${p.reason})${labelEsc}`);
         }
       }
     } else {
-      console.log('  (Nothing to do)');
+      log('  (Nothing to do)');
     }
 
     // Apply — add **backwards** (oldest→newest)
@@ -336,25 +349,23 @@ async function runYt2Sp({ dryRun, recentLimitOverride }) {
       const adds = plan.filter(p => p.action === 'add');
       const maps = plan.filter(p => p.action === 'map-only');
 
-      // Add in reverse plan order to preserve final ordering
       for (const p of adds.slice().reverse()) {
         try {
           await addTracksToPlaylist(sp, spId, [p.spTrackId]);
           spTrackSet.add(p.spTrackId);
           cache.map[p.spTrackId] = p.v.id; // record mapping
-          console.log(`  ✓ Added → spotify:track:${p.spTrackId}`);
+          log(`  ✓ Added → spotify:track:${p.spTrackId}`);
         } catch (e) {
-          console.warn(`  ! Failed to add ${p.v.title}: ${e.message}`);
+          log(`  ! Failed to add ${p.v.title}: ${e.message}`);
         }
       }
 
-      // Map-only
       for (const p of maps) {
         try {
           cache.map[p.spTrackId] = p.v.id;
-          console.log('  ✓ Mapped only');
+          log('  ✓ Mapped only');
         } catch (e) {
-          console.warn(`  ! Failed to map ${p.v.title}: ${e.message}`);
+          log(`  ! Failed to map ${p.v.title}: ${e.message}`);
         }
       }
 
@@ -368,9 +379,9 @@ async function runYt2Sp({ dryRun, recentLimitOverride }) {
       cache.seenTrackIds = newSeen;
       cache.lastSync = new Date().toISOString();
       saveCache(spId, cache);
-      console.log('• Cache updated.');
+      log('• Cache updated.');
     } else {
-      console.log('• DRY-RUN: no changes applied. Run without --dry-run to sync.');
+      log('• DRY-RUN: no changes applied. Run without --dry-run to sync.');
     }
   }
 }

@@ -1,9 +1,24 @@
 {
-  "pairs": [
-    {
-      "spotifyPlaylistId": "5fgL6zS3Z2XDLCeget5PQm",
-      "youtubePlaylistId": "PLIIGtvBU2dpDEZaowkq3TbA_SWy90TwWM"
-    }
-  ],
-  "options": { "durationSlackSec": 7, "direction": "sp2yt" }
+    "pairs": [
+        {
+            "nickname": "YOUR_PLAYLIST_NICKNAME",
+            "spotifyPlaylistId": "YOUR_SPOTIFY_PLAYLIST_ID",
+            "youtubePlaylistId": "YOUR_YOUTUBE_PLAYLIST_ID"
+        },
+        {
+            "nickname": "YOUR_PLAYLIST_NICKNAME",
+            "spotifyPlaylistId": "YOUR_SPOTIFY_PLAYLIST_ID",
+            "youtubePlaylistId": "YOUR_YOUTUBE_PLAYLIST_ID"
+        },
+        {
+            "nickname": "YOUR_PLAYLIST_NICKNAME",
+            "spotifyPlaylistId": "YOUR_SPOTIFY_PLAYLIST_ID",
+            "youtubePlaylistId": "YOUR_YOUTUBE_PLAYLIST_ID"
+        },
+        {
+            "nickname": "YOUR_PLAYLIST_NICKNAME",
+            "spotifyPlaylistId": "YOUR_SPOTIFY_PLAYLIST_ID",
+            "youtubePlaylistId": "YOUR_YOUTUBE_PLAYLIST_ID"
+        }
+    ]
 }

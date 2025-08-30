@@ -1,0 +1,28 @@
+{
+  "name": "spotify-youtube-playlist-sync",
+  "version": "1.0.0",
+  "type":"commonjs",
+  "main": "index.js",
+  "scripts": {
+    "start": "node src/index.js --dry-run",
+    "start:prod": "node src/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/royDavidovich/spotify-youtube-playlist-sync.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/royDavidovich/spotify-youtube-playlist-sync/issues"
+  },
+  "homepage": "https://github.com/royDavidovich/spotify-youtube-playlist-sync#readme",
+  "description": "",
+  "dependencies": {
+    "dotenv": "^17.2.1",
+    "fuse.js": "^7.1.0",
+    "googleapis": "^159.0.0",
+    "spotify-web-api-node": "^5.0.2"
+  }
+}

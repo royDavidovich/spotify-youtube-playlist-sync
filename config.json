@@ -1,0 +1,9 @@
+{
+  "pairs": [
+    {
+      "spotifyPlaylistId": "SPOTIFY_PLAYLIST_ID",
+      "youtubePlaylistId": "YOUTUBE_PLAYLIST_ID"
+    }
+  ],
+  "options": { "durationSlackSec": 7, "direction": "sp2yt" }
+}

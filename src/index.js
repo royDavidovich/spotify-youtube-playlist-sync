@@ -12,7 +12,8 @@
 //   actual additions from the first leg.
 //
 // Adds are applied **backwards** (oldest→newest).
-// NEW: Per-pair "nickname" prefix in all logs.
+// Per-pair "nickname" prefix in all logs.
+// NEW: --verbose prints YT→SP reasoning (orientation, queries, top candidates, etc.)
 
 require('dotenv').config();
 const readline = require('readline');
@@ -101,7 +102,7 @@ function makeLogger(label) {
 }
 
 // ====================== SPOTIFY → YOUTUBE ======================
-async function runSp2Yt({ dryRun }) {
+async function runSp2Yt({ dryRun, verbose }) {
   const [sp, yt] = await Promise.all([getSpotify(), getYouTube()]);
 
   let addedCountTotal = 0; // returned for BOTH-mode bump
@@ -244,7 +245,7 @@ async function runSp2Yt({ dryRun }) {
 }
 
 // ====================== YOUTUBE → SPOTIFY ======================
-async function runYt2Sp({ dryRun, recentLimitOverride }) {
+async function runYt2Sp({ dryRun, recentLimitOverride, verbose }) {
   const [sp, yt] = await Promise.all([getSpotify(), getYouTube()]);
 
   for (const pair of CONFIG.pairs) {
@@ -252,6 +253,7 @@ async function runYt2Sp({ dryRun, recentLimitOverride }) {
     const ytId = pair.youtubePlaylistId;
     const label = makePairLabel(pair);
     const log = makeLogger(label);
+    const vlog = (...xs) => { if (verbose) log(...xs); };
 
     if (!spId || !ytId || spId === 'SPOTIFY_PLAYLIST_ID' || ytId === 'YOUTUBE_PLAYLIST_ID') {
       log('⚠️  Set real playlist IDs in config.json');
@@ -293,37 +295,49 @@ async function runYt2Sp({ dryRun, recentLimitOverride }) {
 
     const plan = [];
     for (const v of ytItems) {
+      if (verbose) {
+        vlog(`→ Inspect YT: "${v.title}" (${v.durationMs || '?'}ms)  channel="${v.channelTitle}"`);
+      }
       // Already mapped?
       const mappedSp = reverseMap.get(v.id);
       if (mappedSp) {
         if (spTrackSet.has(mappedSp)) {
+          vlog('    already mapped & present on Spotify — skip');
           continue; // already present
         } else {
+          vlog(`    mapped-but-missing on Spotify → plan ADD spotify:track:${mappedSp}`);
           plan.push({ v, action: 'add', spTrackId: mappedSp, reason: 'mapped-but-missing' });
           continue;
         }
       }
 
       // soft dupe check in Spotify playlist
-      const softDup = findSoftDupeInSpotify(v, spItemsAll);
+      const softDup = findSoftDupeInSpotify(v, spItemsAll, { verbose, log: msg => vlog(msg) });
       if (softDup) {
         plan.push({ v, action: 'map-only', spTrackId: softDup.id, reason: 'soft-dup-in-playlist' });
         continue;
       }
 
-      // search Spotify (K=5 → escalate 10)
-      const { best, reason, inspected, escalated } =
-        await findBestSpotifyForYouTubeVideo(sp, v, { slackSec: DEFAULT_DURATION_SLACK_SEC });
+      // search Spotify (K=5 → escalate 10) with full debug
+      const { best, reason, inspected, escalated, score } =
+        await findBestSpotifyForYouTubeVideo(sp, v, {
+          slackSec: DEFAULT_DURATION_SLACK_SEC,
+          verbose,
+          log: msg => vlog(msg)
+        });
 
       if (!best) {
+        vlog(`    no best match (${reason}); inspected=${inspected}${escalated ? ', escalated' : ''}`);
         plan.push({ v, action: 'skip', reason: reason || 'no_match', inspected, escalated });
         continue;
       }
 
       if (spTrackSet.has(best.id)) {
-        plan.push({ v, action: 'map-only', spTrackId: best.id, inspected, escalated });
+        vlog(`    best: "${best.name}" [present in playlist] → MAP-ONLY`);
+        plan.push({ v, action: 'map-only', spTrackId: best.id, inspected, escalated, score });
       } else {
-        plan.push({ v, action: 'add', spTrackId: best.id, inspected, escalated });
+        vlog(`    best: "${best.name}" [NOT present] → ADD`);
+        plan.push({ v, action: 'add', spTrackId: best.id, inspected, escalated, score });
       }
     }
 
@@ -332,10 +346,10 @@ async function runYt2Sp({ dryRun, recentLimitOverride }) {
       for (const p of plan) {
         const labelEsc = p.escalated ? ' (escalated to 10)' : '';
         if (p.action === 'add') {
-          log(`  + ADD  ${p.v.title}  →  spotify:track:${p.spTrackId}${labelEsc}`);
+          log(`  + ADD  ${p.v.title}  →  spotify:track:${p.spTrackId}${labelEsc}${verbose && p.score != null ? ` [score≈${p.score.toFixed(2)}]` : ''}`);
         } else if (p.action === 'map-only') {
           const why = p.reason ? ` [${p.reason}]` : '';
-          log(`  = MAP  ${p.v.title}  ↔  spotify:track:${p.spTrackId}${why}${labelEsc}`);
+          log(`  = MAP  ${p.v.title}  ↔  spotify:track:${p.spTrackId}${why}${labelEsc}${verbose && p.score != null ? ` [score≈${p.score.toFixed(2)}]` : ''}`);
         } else {
           log(`  ~ SKIP ${p.v.title}  (${p.reason})${labelEsc}`);
         }
@@ -389,6 +403,8 @@ async function runYt2Sp({ dryRun, recentLimitOverride }) {
 // ====================== MAIN ======================
 (async () => {
   const dryRun = args.includes('--dry-run');
+  const verbose = args.includes('--verbose');
+
   let mode = parseModeFromArgs();
   if (!mode) {
     const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
@@ -396,15 +412,15 @@ async function runYt2Sp({ dryRun, recentLimitOverride }) {
   }
 
   if (mode === MODES.SP2YT) {
-    await runSp2Yt({ dryRun });
+    await runSp2Yt({ dryRun, verbose });
   } else if (mode === MODES.YT2SP) {
-    await runYt2Sp({ dryRun });
+    await runYt2Sp({ dryRun, verbose });
   } else if (mode === MODES.BOTH) {
     // 1) Run SP→YT
-    const { addedCount } = await runSp2Yt({ dryRun });
+    const { addedCount } = await runSp2Yt({ dryRun, verbose });
     // 2) Bump the YT→SP recent window by the number of *actual* additions
     const bumpedWindow = RECENT_YOUTUBE_LIMIT + (addedCount || 0);
-    await runYt2Sp({ dryRun, recentLimitOverride: bumpedWindow });
+    await runYt2Sp({ dryRun, recentLimitOverride: bumpedWindow, verbose });
   }
 
   console.log('\nDone.');

@@ -1,8 +1,8 @@
 {
   "pairs": [
     {
-      "spotifyPlaylistId": "5fJmKb5oTuXe4v7yZvsyQh",
-      "youtubePlaylistId": "PLIIGtvBU2dpDTXYTI6EiCoVi6PlNlpsRv"
+      "spotifyPlaylistId": "5fgL6zS3Z2XDLCeget5PQm",
+      "youtubePlaylistId": "PLIIGtvBU2dpDEZaowkq3TbA_SWy90TwWM"
     }
   ],
   "options": { "durationSlackSec": 7, "direction": "sp2yt" }

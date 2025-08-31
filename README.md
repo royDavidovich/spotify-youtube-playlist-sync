@@ -174,7 +174,7 @@ If you run with **no** `--mode` and you’re in a TTY, you’ll get a 1/2/3 inte
 
 ---
 
-## Scheduling (run it daily)
+## 🕒 Scheduling (run it daily)
 
 Pick one:
 
@@ -185,6 +185,51 @@ Pick one:
 * 🪄 **AWS Lambda + EventBridge**: store `.cache/` in S3 each run; secrets in Secrets Manager.
 
 > Your code relies on a small **file cache**. If your runner is ephemeral, back `.cache/` with S3/GCS so matches remain stable.
+
+---
+
+## 🖥️ Running Manually (No Automation)
+
+If you prefer **not** to pay for automation with online tools ☁️, you can still run the script manually on your own computer, for example **once a week**.
+
+### Windows CMD one-liner
+
+```bash
+cd "%USERPROFILE%\Documents\myRepos\spotify-youtube-playlist-sync" && node src/index.js
+```
+
+### 💡 Why does this work?
+
+* The command uses the environment variable **`%USERPROFILE%`**, which always points to your Windows user folder (e.g. `C:\Users\YourName`).
+
+* From there, it appends the **fixed subpath** where the project lives. In this example, the project is under:
+
+  ```
+  Documents\myRepos\spotify-youtube-playlist-sync
+  ```
+
+* If you know that your project will **always** live in a specific folder, you can safely hardcode that subpath after `%USERPROFILE%`. This way, the shortcut will always find the script, no matter what directory you’re currently in.
+
+### 🚀 Make it even easier with a `.bat` file
+
+Instead of typing the command manually every time, you can create a **batch file**:
+
+1. Open Notepad. ✏️
+
+2. Paste the following content:
+
+   ```bat
+   @echo off
+   cd "%USERPROFILE%\Documents\myRepos\spotify-youtube-playlist-sync"
+   node src/index.js
+   pause
+   ```
+
+3. Save the file as `sync_playlists.bat` (make sure to select **Save as type → All Files**).
+
+4. Double-click `sync_playlists.bat` whenever you want to sync your playlists 🎶.
+
+The `pause` at the end keeps the window open so you can see the log output after it finishes.
 
 ---
 

@@ -10,16 +10,17 @@ const sp = new SpotifyWebApi({
   redirectUri: process.env.SPOTIFY_REDIRECT_URI
 });
 
-// Scopes you’ll need for reading & writing playlists:
+// Scopes for reading Liked Songs + reading/writing playlists
 const scopes = [
   'playlist-read-private',
   'playlist-read-collaborative',
   'playlist-modify-public',
   'playlist-modify-private',
-  'user-library-read'
+  'user-library-read',    // ← needed for getMySavedTracks (Liked Songs)
+  'user-library-modify'   // ← needed for getMySavedTracks (Liked Songs)
 ];
 
-// Third arg = showDialog=true forces the consent screen (helps ensure we get a refresh token)
+// Third arg = showDialog=true forces the consent screen (ensures a refresh token)
 const authURL = sp.createAuthorizeURL(scopes, 'sync_state', true);
 
 console.log('\nOpen this URL in your browser to authorize:\n');

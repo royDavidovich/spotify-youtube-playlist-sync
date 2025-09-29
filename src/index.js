@@ -5,7 +5,7 @@
 //   --mode=both   | --both
 //   --mode=sp2yt  | --sp2yt
 //   --mode=yt2sp  | --yt2sp
-// If no mode passed and interactive TTY: shows a 1/2/3 menu.
+// If no mode passed and interactive TTY: shows a 1/2/3/4/5 menu.
 //
 // BOTH tweak:
 // - After SP→YT finishes, bump YT→SP's recent window by the number of
@@ -17,8 +17,10 @@
 
 require('dotenv').config();
 const readline = require('readline');
+const path = require('path');
+const fs = require('fs');
 
-const MODES = { BOTH: 'both', SP2YT: 'sp2yt', YT2SP: 'yt2sp' };
+const MODES = { BOTH: 'both', SP2YT: 'sp2yt', YT2SP: 'yt2sp', SPOTIFY_TOKEN: 'spotify_token', YOUTUBE_TOKEN: 'youtube_token' };
 const args = process.argv.slice(2);
 
 function parseModeFromArgs() {
@@ -34,18 +36,211 @@ function parseModeFromArgs() {
 function promptMenu() {
   return new Promise(resolve => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    console.log('\nSelect run mode:');
+    console.log('\n╔════════════════════════════════════════════════════════╗');
+    console.log('║          Spotify ↔ YouTube Playlist Sync               ║');
+    console.log('╚════════════════════════════════════════════════════════╝\n');
+    console.log('Select an option:');
     console.log('  1) Run both sides (Spotify → YouTube, then YouTube → Spotify)');
     console.log('  2) Run only Spotify → YouTube');
     console.log('  3) Run only YouTube → Spotify');
-    rl.question('\nEnter 1 / 2 / 3: ', answer => {
+    console.log('  4) Get new Spotify refresh token');
+    console.log('  5) Get new YouTube refresh token');
+    console.log('  6) Exit');
+    rl.question('\nEnter 1 / 2 / 3 / 4 / 5 / 6: ', answer => {
       rl.close();
       const a = String(answer).trim();
       if (a === '1') return resolve(MODES.BOTH);
       if (a === '2') return resolve(MODES.SP2YT);
       if (a === '3') return resolve(MODES.YT2SP);
+      if (a === '4') return resolve(MODES.SPOTIFY_TOKEN);
+      if (a === '5') return resolve(MODES.YOUTUBE_TOKEN);
+      if (a === '6') return resolve(null);
       console.log('Unrecognized choice. Defaulting to "Spotify → YouTube".');
       resolve(MODES.SP2YT);
+    });
+  });
+}
+
+// Update .env file with new refresh token
+function updateEnvFile(tokenKey, newToken) {
+  const envPath = path.join(process.cwd(), '.env');
+  
+  if (!fs.existsSync(envPath)) {
+    console.log('⚠️  .env file not found. Creating new one...');
+    fs.writeFileSync(envPath, `${tokenKey}=${newToken}\n`, 'utf8');
+    console.log('✅ Created .env file with new token.');
+    return;
+  }
+
+  let envContent = fs.readFileSync(envPath, 'utf8');
+  const regex = new RegExp(`^${tokenKey}=.*$`, 'm');
+  
+  if (regex.test(envContent)) {
+    // Replace existing token
+    envContent = envContent.replace(regex, `${tokenKey}=${newToken}`);
+    console.log(`✅ Updated ${tokenKey} in .env file.`);
+  } else {
+    // Add new token at the end
+    if (!envContent.endsWith('\n')) envContent += '\n';
+    envContent += `${tokenKey}=${newToken}\n`;
+    console.log(`✅ Added ${tokenKey} to .env file.`);
+  }
+  
+  fs.writeFileSync(envPath, envContent, 'utf8');
+}
+
+// Wrapper to run the existing Spotify token script with auto-save
+async function runSpotifyTokenScript() {
+  console.log('\n🔐 Getting Spotify refresh token...\n');
+  
+  // Dynamically require and modify the existing script's behavior
+  const http = require('http');
+  const { URL } = require('url');
+  const SpotifyWebApi = require('spotify-web-api-node');
+
+  const sp = new SpotifyWebApi({
+    clientId: process.env.SPOTIFY_CLIENT_ID,
+    clientSecret: process.env.SPOTIFY_CLIENT_SECRET,
+    redirectUri: process.env.SPOTIFY_REDIRECT_URI
+  });
+
+  const scopes = [
+    'playlist-read-private',
+    'playlist-read-collaborative',
+    'playlist-modify-public',
+    'playlist-modify-private',
+    'user-library-read',
+    'user-library-modify'
+  ];
+
+  const authURL = sp.createAuthorizeURL(scopes, 'sync_state', true);
+
+  console.log('Open this URL in your browser to authorize:\n');
+  console.log(authURL);
+  console.log('\nListening on http://127.0.0.1:8080/callback ...\n');
+
+  return new Promise((resolve) => {
+    const server = http.createServer(async (req, res) => {
+      const u = new URL(req.url, 'http://127.0.0.1:8080');
+      if (u.pathname !== '/callback') { res.end('OK'); return; }
+
+      const code = u.searchParams.get('code');
+      try {
+        const data = await sp.authorizationCodeGrant(code);
+        const refreshToken = data.body.refresh_token;
+        
+        console.log('\n✅ Successfully obtained Spotify refresh token!');
+        
+        // Auto-update .env
+        updateEnvFile('SPOTIFY_REFRESH_TOKEN', refreshToken);
+
+        res.end('✅ Success! Token saved to .env. You can close this tab and return to the terminal.');
+        server.close();
+        resolve();
+      } catch (e) {
+        console.error('❌ Auth error:', e.body?.error_description || e.message);
+        res.statusCode = 500;
+        res.end('❌ Auth error. Check terminal.');
+        server.close();
+        resolve(); // Still resolve to return to menu
+      }
+    }).listen(8080);
+  });
+}
+
+// Wrapper to run the existing YouTube token script with auto-save
+async function runYouTubeTokenScript() {
+  console.log('\n🔐 Getting YouTube refresh token...\n');
+  
+  const http = require('http');
+  const { URL } = require('url');
+  const { google } = require('googleapis');
+
+  const REDIRECT = process.env.YT_REDIRECT_URI || 'http://127.0.0.1:8081/callback';
+  const parsed = new URL(REDIRECT);
+  const HOST = parsed.hostname || '127.0.0.1';
+  const PORT = parsed.port ? Number(parsed.port) : (parsed.protocol === 'https:' ? 443 : 80);
+  const CALLBACK_PATH = parsed.pathname || '/callback';
+
+  const oAuth2Client = new google.auth.OAuth2(
+    process.env.YT_CLIENT_ID,
+    process.env.YT_CLIENT_SECRET,
+    REDIRECT
+  );
+
+  const scopes = ['https://www.googleapis.com/auth/youtube'];
+
+  const authURL = oAuth2Client.generateAuthUrl({
+    access_type: 'offline',
+    prompt: 'consent',
+    scope: scopes
+  });
+
+  console.log('Open this URL in your browser to authorize:\n');
+  console.log(authURL);
+  console.log(`\nListening on ${parsed.origin}${CALLBACK_PATH} ...\n`);
+
+  return new Promise((resolve) => {
+    const server = http.createServer(async (req, res) => {
+      const u = new URL(req.url, `${parsed.origin}`);
+      if (u.pathname !== CALLBACK_PATH) {
+        res.statusCode = 200;
+        res.end(`OK – waiting for ${CALLBACK_PATH}`);
+        return;
+      }
+
+      const oauthError = u.searchParams.get('error');
+      if (oauthError) {
+        console.error('❌ Auth error from Google:', oauthError);
+        res.statusCode = 400;
+        res.end('❌ Auth error from Google. Check terminal logs.');
+        server.close();
+        resolve(); // Return to menu
+        return;
+      }
+
+      const code = u.searchParams.get('code');
+      if (!code) {
+        res.statusCode = 400;
+        res.end("❌ Missing 'code' param on callback URL.");
+        server.close();
+        resolve(); // Return to menu
+        return;
+      }
+
+      try {
+        const { tokens } = await oAuth2Client.getToken(code);
+        const refreshToken = tokens.refresh_token;
+        
+        if (!refreshToken) {
+          console.warn('\n⚠️  No REFRESH_TOKEN returned.');
+          console.warn('Tips:');
+          console.warn('  • Ensure access_type=offline and prompt=consent (already set).');
+          console.warn('  • Revoke the app at https://myaccount.google.com/permissions and try again.');
+          console.warn('  • Make sure your OAuth consent screen is in Testing mode.\n');
+          res.end('⚠️  No refresh token received. See terminal for details.');
+          server.close();
+          resolve(); // Return to menu
+          return;
+        }
+
+        console.log('\n✅ Successfully obtained YouTube refresh token!');
+        
+        // Auto-update .env
+        updateEnvFile('YT_REFRESH_TOKEN', refreshToken);
+
+        res.end('✅ Success! Token saved to .env. You can close this tab and return to the terminal.');
+        server.close();
+        resolve();
+      } catch (e) {
+        console.error('❌ Auth exchange failed:', e.message || e);
+        res.statusCode = 500;
+        res.end('❌ Auth exchange failed. Check terminal.');
+        server.close();
+        resolve(); // Return to menu
+      }
+    }).listen(PORT, HOST, () => {
+      console.log(`Server bound on http://${HOST}:${PORT}${CALLBACK_PATH}`);
     });
   });
 }
@@ -213,7 +408,7 @@ async function runSp2Yt({ dryRun, verbose }) {
           ytVideoSet.add(p.videoId);
           cache.map[p.s.id] = p.videoId;
           addedThisPair += 1;
-          log(`  ✓ Added → ${p.videoId}`);
+          log(`  ✔ Added → ${p.videoId}`);
         } catch (e) {
           log(`  ! Failed to add ${p.s.title}: ${e.message}`);
         }
@@ -222,7 +417,7 @@ async function runSp2Yt({ dryRun, verbose }) {
       for (const p of maps) {
         try {
           cache.map[p.s.id] = p.videoId;
-          log('  ✓ Mapped only');
+          log('  ✔ Mapped only');
         } catch (e) {
           log(`  ! Failed to map ${p.s.title}: ${e.message}`);
         }
@@ -368,7 +563,7 @@ async function runYt2Sp({ dryRun, recentLimitOverride, verbose }) {
           await addTracksToPlaylist(sp, spId, [p.spTrackId]);
           spTrackSet.add(p.spTrackId);
           cache.map[p.spTrackId] = p.v.id; // record mapping
-          log(`  ✓ Added → spotify:track:${p.spTrackId}`);
+          log(`  ✔ Added → spotify:track:${p.spTrackId}`);
         } catch (e) {
           log(`  ! Failed to add ${p.v.title}: ${e.message}`);
         }
@@ -377,7 +572,7 @@ async function runYt2Sp({ dryRun, recentLimitOverride, verbose }) {
       for (const p of maps) {
         try {
           cache.map[p.spTrackId] = p.v.id;
-          log('  ✓ Mapped only');
+          log('  ✔ Mapped only');
         } catch (e) {
           log(`  ! Failed to map ${p.v.title}: ${e.message}`);
         }
@@ -406,24 +601,48 @@ async function runYt2Sp({ dryRun, recentLimitOverride, verbose }) {
   const verbose = args.includes('--verbose');
 
   let mode = parseModeFromArgs();
-  if (!mode) {
-    const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
-    mode = isInteractive ? await promptMenu() : MODES.SP2YT;
-  }
+  
+  // Interactive loop - keep showing menu until user exits
+  while (true) {
+    if (!mode) {
+      const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
+      mode = isInteractive ? await promptMenu() : MODES.SP2YT;
+    }
 
-  if (mode === MODES.SP2YT) {
-    await runSp2Yt({ dryRun, verbose });
-  } else if (mode === MODES.YT2SP) {
-    await runYt2Sp({ dryRun, verbose });
-  } else if (mode === MODES.BOTH) {
-    // 1) Run SP→YT
-    const { addedCount } = await runSp2Yt({ dryRun, verbose });
-    // 2) Bump the YT→SP recent window by the number of *actual* additions
-    const bumpedWindow = RECENT_YOUTUBE_LIMIT + (addedCount || 0);
-    await runYt2Sp({ dryRun, recentLimitOverride: bumpedWindow, verbose });
-  }
+    if (!mode) {
+      console.log('\nExiting...');
+      break;
+    }
 
-  console.log('\nDone.');
+    if (mode === MODES.SPOTIFY_TOKEN) {
+      await runSpotifyTokenScript();
+      mode = null; // Reset to show menu again
+      continue;
+    } else if (mode === MODES.YOUTUBE_TOKEN) {
+      await runYouTubeTokenScript();
+      mode = null; // Reset to show menu again
+      continue;
+    } else if (mode === MODES.SP2YT) {
+      await runSp2Yt({ dryRun, verbose });
+    } else if (mode === MODES.YT2SP) {
+      await runYt2Sp({ dryRun, verbose });
+    } else if (mode === MODES.BOTH) {
+      // 1) Run SP→YT
+      const { addedCount } = await runSp2Yt({ dryRun, verbose });
+      // 2) Bump the YT→SP recent window by the number of *actual* additions
+      const bumpedWindow = RECENT_YOUTUBE_LIMIT + (addedCount || 0);
+      await runYt2Sp({ dryRun, recentLimitOverride: bumpedWindow, verbose });
+    }
+
+    console.log('\nDone.');
+    
+    // If mode was passed via CLI args, exit after one run
+    // Otherwise reset to show menu again
+    if (parseModeFromArgs()) {
+      break;
+    }
+    mode = null;
+  }
 })().catch(e => {
   console.error(e);
   process.exit(1);

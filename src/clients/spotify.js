@@ -14,13 +14,37 @@ function canonicalFromPlaylistItem(it) {
   };
 }
 
+// Accept a few friendly aliases for Liked Songs
+function isLikedSongsId(id) {
+  if (!id) return false;
+  const x = String(id).toLowerCase().trim();
+  return x === 'liked_songs' || x === 'liked' || x === 'me:liked' || x === 'library:liked';
+}
+
 async function getAllPlaylistItems(sp, playlistId) {
+  // Special-case: Liked Songs use a different API (saved tracks), not playlist tracks
+  if (isLikedSongsId(playlistId)) {
+    let items = [];
+    let offset = 0;
+    while (true) {
+      // getMySavedTracks paginates at 50
+      const res = await sp.getMySavedTracks({ limit: 50, offset });
+      const batch = res.body.items || [];
+      items = items.concat(batch);
+      offset += batch.length;
+      if (!res.body.next) break;
+    }
+    return items.map(canonicalFromPlaylistItem).filter(Boolean);
+  }
+
+  // Regular playlist
   let items = [];
   let offset = 0;
   while (true) {
     const res = await sp.getPlaylistTracks(playlistId, { limit: 100, offset });
-    items = items.concat(res.body.items || []);
-    offset += res.body.items?.length || 0;
+    const batch = res.body.items || [];
+    items = items.concat(batch);
+    offset += batch.length;
     if (!res.body.next) break;
   }
   return items.map(canonicalFromPlaylistItem).filter(Boolean);
@@ -330,9 +354,18 @@ async function findBestSpotifyForYouTubeVideo(sp, ytItem, { slackSec = 7, verbos
   };
 }
 
-// Convenience: add plain track IDs to a playlist
+// Convenience: add plain track IDs to a playlist, and check if it's for "liked songs" library 
 async function addTracksToPlaylist(sp, playlistId, trackIds) {
   if (!trackIds || trackIds.length === 0) return;
+
+  if (isLikedSongsId(playlistId)) {
+    // Liked Songs uses the "Saved Tracks" API, not playlist adds
+    // Requires the "user-library-modify" scope
+    await sp.addToMySavedTracks(trackIds);
+    return;
+  }
+
+  // Regular playlist add
   const uris = trackIds.map(id => `spotify:track:${id}`);
   await sp.addTracksToPlaylist(playlistId, uris);
 }

@@ -1,4 +1,4 @@
-const { norm, tokens, jaccardTitle, hasUsableTokens } = require('../util/text');
+const { norm, normForVersionCheck, tokens, jaccardTitle, hasUsableTokens } = require('../util/text');
 
 // Canonicalize a Spotify playlist item (unchanged)
 function canonicalFromPlaylistItem(it) {
@@ -124,12 +124,14 @@ function deriveArtistGuess(ytTitle, channelTitle) {
 }
 
 function versionTokens(s) {
-  const x = norm(s);
+  // Must use normForVersionCheck, not norm: norm() strips "lyrics" and "remaster"
+  // before we can test for them, making hasLyric/hasRemaster permanently false.
+  const x = normForVersionCheck(s);
   return {
     hasLive: /\blive\b/.test(x),
     hasRemix: /\bremix\b/.test(x),
     hasAcoustic: /\bacoustic\b/.test(x),
-    hasLyric: /\blyric(s)?\b/.test(x),
+    hasLyric: /\blyrics?\b/.test(x),
     hasRemaster: /\bremaster(ed)?\b/.test(x)
   };
 }
@@ -316,10 +318,15 @@ async function findBestSpotifyForYouTubeVideo(sp, ytItem, { slackSec = 7, verbos
   // If there is an exact title match that is NOT an MV, prefer it outright.
   const exactNonMV = pool.filter(t => isExactTitleMatch(titleCore, t.name || '') && !isMusicVideoName(t.name || ''));
   if (exactNonMV.length) {
-    // tie-break within these by duration closeness + popularity
+    // tie-break: prefer artist-aligned candidates (when we have a trusted artist),
+    // then duration closeness, then popularity. Without the artist bonus, common
+    // single-word titles (e.g. "Love") could pick the wrong artist's track.
     let chosen = null, bestTie = -Infinity;
     for (const t of exactNonMV) {
-      const tie = (1 - (Math.abs((t.duration_ms || 0) - (ytItem.durationMs || 0)) / (slackSec * 1000))) + ((t.popularity || 0) / 200);
+      const artistBonus = (trusted && artistAligned(artistGuess, t)) ? 1 : 0;
+      const tie = artistBonus +
+                  (1 - (Math.abs((t.duration_ms || 0) - (ytItem.durationMs || 0)) / (slackSec * 1000))) +
+                  ((t.popularity || 0) / 200);
       if (tie > bestTie) { bestTie = tie; chosen = t; }
     }
     if (verbose) log(`      exact non-MV title match chosen: "${chosen.name}" by ${chosen.artists.map(a=>a.name).join(', ')} (score≈${bestTie.toFixed(2)})`);

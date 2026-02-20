@@ -1,4 +1,4 @@
-const { norm, tokens, jaccardTitle, hasUsableTokens } = require('../util/text');
+const { norm, normForVersionCheck, tokens, jaccardTitle, hasUsableTokens } = require('../util/text');
 
 const isoDur = /PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/;
 
@@ -30,12 +30,36 @@ function isShortVideo(trackMs, candMs) {
 const VARIANT_TOKENS = ['live','acoustic','remix','remaster','clean','explicit','radio edit'];
 const DISALLOWED_TOKENS = [
   'cover','karaoke','sped up','speed up','nightcore','slowed','8d','8d audio','loop','extended',
-  'reaction','compilation','mix','full album','tribute','fanmade','edit','reverb','bass boosted'
+  'reaction','compilation','mix','full album','tribute','fanmade','edit','reverb','bass boosted',
+  // Multilingual lyrics/subtitle markers
+  'letra','letras',     // Spanish/Portuguese for "lyrics"
+  'subtitulado',        // Spanish for "subtitled"
+  'paroles'             // French for "lyrics"
 ];
 
-function violatesVersionRules(spotifyTitle, ytTitle, ytDesc) {
-  const st = norm(spotifyTitle);
-  const yt = `${norm(ytTitle)} ${norm(ytDesc)}`;
+const LYRICS_RE = /\blyrics?\b/;
+
+// Build word-boundary regexes for DISALLOWED_TOKENS so that e.g. "mix" doesn't
+// false-match inside "remix" (which is an allowed variant, not a disallowed one).
+function makeWordBoundaryRegex(phrase) {
+  const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+  return new RegExp(`\\b${escaped}\\b`);
+}
+const DISALLOWED_REGEXES = DISALLOWED_TOKENS.map(makeWordBoundaryRegex);
+
+function violatesVersionRules(spotifyTitle, ytTitle) {
+  // Use normForVersionCheck (not norm) so that version keywords like "lyrics"
+  // and "remaster" are preserved — norm() strips them before we can test for them.
+  // Only check the YT title, not the description: descriptions are long and cause
+  // false positives (e.g., a description mentioning "remix" on a studio track).
+
+  // Check raw (pre-normalized) title for the YouTube subtitle-video convention:
+  // "Song |sub.español", "Song |subs english", etc. The pipe + "sub" pattern
+  // is effectively always a fan-made subtitle/lyrics upload; official tracks never use it.
+  if (/\|\s*subs?\b/i.test(ytTitle) && !/\|\s*subs?\b/i.test(spotifyTitle)) return true;
+
+  const st = normForVersionCheck(spotifyTitle);
+  const yt = normForVersionCheck(ytTitle);
 
   const allowed = new Set();
   for (const v of VARIANT_TOKENS) if (st.includes(v)) allowed.add(v);
@@ -43,10 +67,12 @@ function violatesVersionRules(spotifyTitle, ytTitle, ytDesc) {
   for (const v of VARIANT_TOKENS) {
     if (yt.includes(v) && !allowed.has(v)) return true;
   }
-  for (const d of DISALLOWED_TOKENS) {
-    if (yt.includes(d) && !st.includes(d)) return true;
+  // Use word-boundary regex for disallowed tokens so "mix" doesn't falsely match
+  // inside "remix" (which is an allowed variant already handled above).
+  for (const re of DISALLOWED_REGEXES) {
+    if (re.test(yt) && !re.test(st)) return true;
   }
-  if (yt.includes('lyric') && !st.includes('lyric')) return true;
+  if (LYRICS_RE.test(yt) && !LYRICS_RE.test(st)) return true;
 
   return false;
 }
@@ -105,14 +131,20 @@ function categoryBonus(categoryId) {
   return categoryId === '10' ? 0.3 : 0.0;
 }
 
-function passesHardFilters(spItem, cand, slackSec) {
-  if (durationCloseness(spItem.durationMs, cand.durationMs, slackSec) === 0) return false;
-  if (isShortVideo(spItem.durationMs, cand.durationMs)) return false;
-  if (violatesVersionRules(spItem.title, cand.title, cand.description || '')) return false;
+// Returns the name of the first failing filter, or null if the candidate passes all.
+// Used both by passesHardFilters and by the verbose rejection log.
+function filterReason(spItem, cand, slackSec) {
+  if (durationCloseness(spItem.durationMs, cand.durationMs, slackSec) === 0) return 'duration_out_of_range';
+  if (isShortVideo(spItem.durationMs, cand.durationMs)) return 'short_video';
+  if (violatesVersionRules(spItem.title, cand.title)) return 'version_mismatch';
   const primary = spItem.artists?.[0] || '';
-  if (!artistAlignment(primary, cand.title, cand.channelTitle)) return false;
-  if (!hasAllTitleTokens(spItem.title, cand.title)) return false;
-  return true;
+  if (!artistAlignment(primary, cand.title, cand.channelTitle)) return 'artist_not_aligned';
+  if (!hasAllTitleTokens(spItem.title, cand.title)) return 'missing_title_tokens';
+  return null;
+}
+
+function passesHardFilters(spItem, cand, slackSec) {
+  return filterReason(spItem, cand, slackSec) === null;
 }
 
 function scoreCandidate(spItem, cand, slackSec) {
@@ -124,7 +156,12 @@ function scoreCandidate(spItem, cand, slackSec) {
   const sType = contentTypeScore(cand.title, cand.channelTitle);
   const sPop = popularityScore(cand.viewCount, cand.publishedAt);
   const sCat = categoryBonus(cand.categoryId);
-  return (sTrust * 2.0) + (sTitle * 1.6) + (sArtist * 1.0) + (sDur * 1.4) + (sType * 0.6) + (sPop * 0.4) + sCat;
+  // Secondary defence: penalise lyrics videos that slipped past the hard filter
+  // (e.g. "lyrics" only in the description, not the title).
+  const ytHasLyrics = LYRICS_RE.test((cand.title || '').toLowerCase());
+  const spHasLyrics = LYRICS_RE.test((spItem.title || '').toLowerCase());
+  const sLyrics = (ytHasLyrics && !spHasLyrics) ? -0.5 : 0;
+  return (sTrust * 2.0) + (sTitle * 1.6) + (sArtist * 1.0) + (sDur * 1.4) + (sType * 0.6) + (sPop * 0.4) + sCat + sLyrics;
 }
 
 async function getYouTubePlaylistItems(youtube, playlistId) {
@@ -176,6 +213,12 @@ async function findBestYouTubeForSpotifyTrack(youtube, spItem, { slackSec = 7, v
     return { best: null, reason: 'unintelligible_query', inspected: 0, escalated: false };
   }
 
+  if (verbose) {
+    log(`    SP→YT debug:`);
+    log(`      track="${spItem.title}"  artist="${primaryArtist}"`);
+    log(`      query="${q}"`);
+  }
+
   const search = await youtube.search.list({
     part: ['snippet'],
     q,
@@ -204,6 +247,7 @@ async function findBestYouTubeForSpotifyTrack(youtube, spItem, { slackSec = 7, v
   });
 
   const all = order.map(id => infosById.get(id)).filter(Boolean).map(toCandidate);
+  if (verbose) log(`      results fetched: ${all.length}`);
 
   let pool = all.slice(0, 5).filter(c => passesHardFilters(spItem, c, slackSec));
   let escalated = false;
@@ -211,15 +255,36 @@ async function findBestYouTubeForSpotifyTrack(youtube, spItem, { slackSec = 7, v
     pool = all.slice(0, 10).filter(c => passesHardFilters(spItem, c, slackSec));
     escalated = true;
   }
+
+  if (verbose) {
+    const inspected = escalated ? all.slice(0, 10) : all.slice(0, 5);
+    for (const c of inspected) {
+      const reason = filterReason(spItem, c, slackSec);
+      if (reason) {
+        const durDelta = Math.abs((c.durationMs || 0) - (spItem.durationMs || 0));
+        log(`      ✗ "${c.title}" channel="${c.channelTitle}"  Δms=${durDelta}  ← ${reason}`);
+      }
+    }
+    log(`      filtered pool: ${pool.length}${escalated ? ' (escalated to 10)' : ''}`);
+  }
+
   if (pool.length === 0) {
     return { best: null, reason: 'no_candidate_passed_filters', inspected: escalated ? Math.min(10, all.length) : Math.min(5, all.length), escalated };
   }
 
-  let best = null, bestScore = -Infinity;
-  for (const c of pool) {
-    const s = scoreCandidate(spItem, c, slackSec);
-    if (s > bestScore) { best = c; bestScore = s; }
+  const scored = pool
+    .map(c => ({ c, s: scoreCandidate(spItem, c, slackSec) }))
+    .sort((a, b) => b.s - a.s);
+
+  if (verbose) {
+    for (const { c, s } of scored.slice(0, 3)) {
+      const durDelta = Math.abs((c.durationMs || 0) - (spItem.durationMs || 0));
+      log(`      → cand: "${c.title}" channel="${c.channelTitle}"  Δms=${durDelta}  score=${s.toFixed(2)}`);
+    }
   }
+
+  const best = scored[0]?.c || null;
+  const bestScore = scored[0]?.s ?? -Infinity;
   return { best, reason: best ? 'ok' : 'no_best', inspected: escalated ? Math.min(10, all.length) : Math.min(5, all.length), escalated, score: bestScore };
 }
 

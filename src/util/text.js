@@ -38,4 +38,15 @@ function hasUsableTokens(...parts) {
   return letters >= 2;
 }
 
-module.exports = { norm, tokens, jaccardTitle, STOPWORDS, hasUsableTokens };
+// Like norm(), but preserves version keywords (lyrics, remaster, live, etc.)
+// Use this when you need to DETECT version tokens in a string, not when computing
+// title similarity — norm() strips those words so Jaccard doesn't penalise them.
+function normForVersionCheck(s) {
+  return (s || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+module.exports = { norm, normForVersionCheck, tokens, jaccardTitle, STOPWORDS, hasUsableTokens };

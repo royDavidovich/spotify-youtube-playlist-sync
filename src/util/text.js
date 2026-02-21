@@ -1,5 +1,3 @@
-// Shared text utilities used by both clients.
-
 function norm(s) {
   return (s || '')
     .toLowerCase()
@@ -38,9 +36,7 @@ function hasUsableTokens(...parts) {
   return letters >= 2;
 }
 
-// Like norm(), but preserves version keywords (lyrics, remaster, live, etc.)
-// Use this when you need to DETECT version tokens in a string, not when computing
-// title similarity — norm() strips those words so Jaccard doesn't penalise them.
+// Like norm(), but preserves version keywords (lyrics, remaster, live, etc.) for detection.
 function normForVersionCheck(s) {
   return (s || '')
     .toLowerCase()

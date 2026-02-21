@@ -25,9 +25,3 @@ function saveCache(playlistId, data) {
 }
 
 module.exports = { loadCache, saveCache };
-// Stores per-playlist cache in ./.cache
-// {
-//   lastSync: ISO string | null,
-//   seenTrackIds: string[],
-//   map: { [spotifyTrackId: string]: youtubeVideoId }
-// }

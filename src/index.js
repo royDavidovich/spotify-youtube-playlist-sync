@@ -33,6 +33,41 @@ function parseModeFromArgs() {
   return null;
 }
 
+function parsePlaylistFilter() {
+  const raw = (args.find(a => a.startsWith('--playlist=')) || '').split('=').slice(1).join('=').trim();
+  return raw || null;
+}
+
+function filterPairs(pairs, filter) {
+  if (!filter || filter === '0') return pairs;
+  const n = Number(filter);
+  if (!isNaN(n) && Number.isInteger(n) && n >= 1 && n <= pairs.length) return [pairs[n - 1]];
+  const low = filter.toLowerCase();
+  const match = pairs.filter(p => (p.nickname || '').toLowerCase().includes(low));
+  if (match.length) return match;
+  console.warn(`⚠️  --playlist="${filter}" matched nothing; running all playlists.`);
+  return pairs;
+}
+
+function promptPlaylistMenu(pairs) {
+  if (pairs.length <= 1) return Promise.resolve(pairs);
+  return new Promise(resolve => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    console.log('\nSelect playlist to sync:');
+    console.log('  0) All playlists');
+    pairs.forEach((p, i) => console.log(`  ${i + 1}) ${makePairLabel(p)}`));
+    rl.question(`\nEnter 0-${pairs.length} (default 0 = all): `, answer => {
+      rl.close();
+      const a = String(answer).trim();
+      if (!a || a === '0') return resolve(pairs);
+      const n = Number(a);
+      if (!isNaN(n) && Number.isInteger(n) && n >= 1 && n <= pairs.length) return resolve([pairs[n - 1]]);
+      console.log('Unrecognized choice. Using all playlists.');
+      resolve(pairs);
+    });
+  });
+}
+
 function promptMenu() {
   return new Promise(resolve => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -61,10 +96,9 @@ function promptMenu() {
   });
 }
 
-// Update .env file with new refresh token
 function updateEnvFile(tokenKey, newToken) {
   const envPath = path.join(process.cwd(), '.env');
-  
+
   if (!fs.existsSync(envPath)) {
     console.log('⚠️  .env file not found. Creating new one...');
     fs.writeFileSync(envPath, `${tokenKey}=${newToken}\n`, 'utf8');
@@ -74,26 +108,22 @@ function updateEnvFile(tokenKey, newToken) {
 
   let envContent = fs.readFileSync(envPath, 'utf8');
   const regex = new RegExp(`^${tokenKey}=.*$`, 'm');
-  
+
   if (regex.test(envContent)) {
-    // Replace existing token
     envContent = envContent.replace(regex, `${tokenKey}=${newToken}`);
     console.log(`✅ Updated ${tokenKey} in .env file.`);
   } else {
-    // Add new token at the end
     if (!envContent.endsWith('\n')) envContent += '\n';
     envContent += `${tokenKey}=${newToken}\n`;
     console.log(`✅ Added ${tokenKey} to .env file.`);
   }
-  
+
   fs.writeFileSync(envPath, envContent, 'utf8');
 }
 
-// Wrapper to run the existing Spotify token script with auto-save
 async function runSpotifyTokenScript() {
   console.log('\n🔐 Getting Spotify refresh token...\n');
-  
-  // Dynamically require and modify the existing script's behavior
+
   const http = require('http');
   const { URL } = require('url');
   const SpotifyWebApi = require('spotify-web-api-node');
@@ -128,10 +158,8 @@ async function runSpotifyTokenScript() {
       try {
         const data = await sp.authorizationCodeGrant(code);
         const refreshToken = data.body.refresh_token;
-        
+
         console.log('\n✅ Successfully obtained Spotify refresh token!');
-        
-        // Auto-update .env
         updateEnvFile('SPOTIFY_REFRESH_TOKEN', refreshToken);
 
         res.end('✅ Success! Token saved to .env. You can close this tab and return to the terminal.');
@@ -142,16 +170,15 @@ async function runSpotifyTokenScript() {
         res.statusCode = 500;
         res.end('❌ Auth error. Check terminal.');
         server.close();
-        resolve(); // Still resolve to return to menu
+        resolve();
       }
     }).listen(8080);
   });
 }
 
-// Wrapper to run the existing YouTube token script with auto-save
 async function runYouTubeTokenScript() {
   console.log('\n🔐 Getting YouTube refresh token...\n');
-  
+
   const http = require('http');
   const { URL } = require('url');
   const { google } = require('googleapis');
@@ -195,7 +222,7 @@ async function runYouTubeTokenScript() {
         res.statusCode = 400;
         res.end('❌ Auth error from Google. Check terminal logs.');
         server.close();
-        resolve(); // Return to menu
+        resolve();
         return;
       }
 
@@ -204,14 +231,14 @@ async function runYouTubeTokenScript() {
         res.statusCode = 400;
         res.end("❌ Missing 'code' param on callback URL.");
         server.close();
-        resolve(); // Return to menu
+        resolve();
         return;
       }
 
       try {
         const { tokens } = await oAuth2Client.getToken(code);
         const refreshToken = tokens.refresh_token;
-        
+
         if (!refreshToken) {
           console.warn('\n⚠️  No REFRESH_TOKEN returned.');
           console.warn('Tips:');
@@ -220,13 +247,11 @@ async function runYouTubeTokenScript() {
           console.warn('  • Make sure your OAuth consent screen is in Testing mode.\n');
           res.end('⚠️  No refresh token received. See terminal for details.');
           server.close();
-          resolve(); // Return to menu
+          resolve();
           return;
         }
 
         console.log('\n✅ Successfully obtained YouTube refresh token!');
-        
-        // Auto-update .env
         updateEnvFile('YT_REFRESH_TOKEN', refreshToken);
 
         res.end('✅ Success! Token saved to .env. You can close this tab and return to the terminal.');
@@ -237,7 +262,7 @@ async function runYouTubeTokenScript() {
         res.statusCode = 500;
         res.end('❌ Auth exchange failed. Check terminal.');
         server.close();
-        resolve(); // Return to menu
+        resolve();
       }
     }).listen(PORT, HOST, () => {
       console.log(`Server bound on http://${HOST}:${PORT}${CALLBACK_PATH}`);
@@ -245,13 +270,11 @@ async function runYouTubeTokenScript() {
   });
 }
 
-// ---- Imports from your clients (keep index.js lean) ----
 const CONFIG = require('../config.json');
 const { getSpotify } = require('./auth/spotifyAuth');
 const { getYouTube } = require('./auth/youtubeAuth');
 
 const {
-  // SPOTIFY client
   getAllPlaylistItems,
   findSoftDupeInSpotify,
   findBestSpotifyForYouTubeVideo,
@@ -259,7 +282,6 @@ const {
 } = require('./clients/spotify');
 
 const {
-  // YOUTUBE client
   getYouTubePlaylistItems,
   findBestYouTubeForSpotifyTrack,
   insertIntoPlaylist,
@@ -268,10 +290,9 @@ const {
 
 const { loadCache, saveCache } = require('./util/cache');
 
-// ---- Small local helpers & constants ----
 const DEFAULT_DURATION_SLACK_SEC = 7;
-const RECENT_SPOTIFY_LIMIT = 10; // only inspect last-L from Spotify when doing SP→YT
-const RECENT_YOUTUBE_LIMIT = 10; // only inspect last-L from YouTube when doing YT→SP
+const RECENT_SPOTIFY_LIMIT = 10;
+const RECENT_YOUTUBE_LIMIT = 10;
 
 function isAfter(aIso, bIso) {
   if (!aIso) return false;
@@ -296,13 +317,12 @@ function makeLogger(label) {
   return (...args) => console.log(`[${label}]`, ...args);
 }
 
-// ====================== SPOTIFY → YOUTUBE ======================
-async function runSp2Yt({ dryRun, verbose }) {
+async function runSp2Yt({ dryRun, verbose, pairs = CONFIG.pairs }) {
   const [sp, yt] = await Promise.all([getSpotify(), getYouTube()]);
 
-  let addedCountTotal = 0; // returned for BOTH-mode bump
+  let addedCountTotal = 0;
 
-  for (const pair of CONFIG.pairs) {
+  for (const pair of pairs) {
     const spId = pair.spotifyPlaylistId;
     const ytId = pair.youtubePlaylistId;
     const label = makePairLabel(pair);
@@ -315,7 +335,7 @@ async function runSp2Yt({ dryRun, verbose }) {
 
     log(`🎯 Syncing Spotify (${spId}) → YouTube (${ytId}) ${dryRun ? '[DRY-RUN]' : ''}`);
 
-    const cache = loadCache(spId); // { lastSync, seenTrackIds[], map{} }
+    const cache = loadCache(spId);
     if (!cache.map) cache.map = {};
     const seen = new Set(cache.seenTrackIds || []);
 
@@ -326,7 +346,6 @@ async function runSp2Yt({ dryRun, verbose }) {
 
     const ytVideoSet = new Set(ytItems.map(v => v.id));
 
-    // Only look at last L Spotify additions
     const spItemsSorted = sortByAddedAtDesc(spItemsAll);
     const spItems = spItemsSorted.slice(0, Math.min(RECENT_SPOTIFY_LIMIT, spItemsSorted.length));
 
@@ -334,7 +353,6 @@ async function runSp2Yt({ dryRun, verbose }) {
     log(`• YouTube videos total: ${ytItems.length}`);
     log(`• Limiting to last ${RECENT_SPOTIFY_LIMIT} Spotify additions → ${spItems.length} to inspect`);
 
-    // Determine candidates within last-L:
     const candidates = [];
     const firstRun = !cache.lastSync;
 
@@ -356,16 +374,14 @@ async function runSp2Yt({ dryRun, verbose }) {
       const mapped = cache.map[s.id];
       if (mapped && ytVideoSet.has(mapped)) continue;
 
-      // pre-add soft-dupe check in existing playlist (looser rules)
       const softDupe = findSoftDupeInPlaylist(s, ytItems);
       if (softDupe) {
         plan.push({ s, action: 'map-only', videoId: softDupe.id, reason: 'soft-dup-in-playlist' });
         continue;
       }
 
-      // Find best candidate via search (K=5, escalate→10 if needed)
       const { best, reason, inspected, escalated } =
-        await findBestYouTubeForSpotifyTrack(yt, s, { slackSec: DEFAULT_DURATION_SLACK_SEC });
+        await findBestYouTubeForSpotifyTrack(yt, s, { slackSec: DEFAULT_DURATION_SLACK_SEC, verbose, log });
 
       if (!best) {
         plan.push({ s, action: 'skip', reason: reason || 'no_match', inspected, escalated });
@@ -379,7 +395,6 @@ async function runSp2Yt({ dryRun, verbose }) {
       }
     }
 
-    // Show plan
     if (plan.length) {
       for (const p of plan) {
         const labelEsc = p.escalated ? ' (escalated to 10)' : '';
@@ -396,7 +411,6 @@ async function runSp2Yt({ dryRun, verbose }) {
       log('  (Nothing to do)');
     }
 
-    // Apply — add **backwards** (oldest→newest)
     let addedThisPair = 0;
     if (!dryRun) {
       const adds = plan.filter(p => p.action === 'add');
@@ -423,7 +437,6 @@ async function runSp2Yt({ dryRun, verbose }) {
         }
       }
 
-      // Update baseline: mark ALL current Spotify tracks as seen so backlog is ignored
       const newSeen = Array.from(new Set([...seen, ...spItemsAll.map(i => i.id)]));
       cache.seenTrackIds = newSeen;
       cache.lastSync = new Date().toISOString();
@@ -439,11 +452,10 @@ async function runSp2Yt({ dryRun, verbose }) {
   return { addedCount: addedCountTotal };
 }
 
-// ====================== YOUTUBE → SPOTIFY ======================
-async function runYt2Sp({ dryRun, recentLimitOverride, verbose }) {
+async function runYt2Sp({ dryRun, recentLimitOverride, verbose, pairs = CONFIG.pairs }) {
   const [sp, yt] = await Promise.all([getSpotify(), getYouTube()]);
 
-  for (const pair of CONFIG.pairs) {
+  for (const pair of pairs) {
     const spId = pair.spotifyPlaylistId;
     const ytId = pair.youtubePlaylistId;
     const label = makePairLabel(pair);
@@ -464,10 +476,9 @@ async function runYt2Sp({ dryRun, recentLimitOverride, verbose }) {
       log(`• Adjusted recent window for YT→SP: ${RECENT_YOUTUBE_LIMIT} → ${effectiveRecent}`);
     }
 
-    const cache = loadCache(spId); // reuse same cache file keyed by Spotify playlist
+    const cache = loadCache(spId);
     if (!cache.map) cache.map = {};
 
-    // Build reverse map: ytVideoId -> spTrackId
     const reverseMap = new Map();
     for (const [spTrackId, ytVideoId] of Object.entries(cache.map)) {
       if (ytVideoId) reverseMap.set(ytVideoId, spTrackId);
@@ -478,7 +489,6 @@ async function runYt2Sp({ dryRun, recentLimitOverride, verbose }) {
       getYouTubePlaylistItems(yt, ytId)
     ]);
 
-    // Only look at last "effectiveRecent" YouTube additions
     const ytItemsSorted = sortByAddedAtDesc(ytItemsAll);
     const ytItems = ytItemsSorted.slice(0, Math.min(effectiveRecent, ytItemsSorted.length));
 
@@ -493,12 +503,11 @@ async function runYt2Sp({ dryRun, recentLimitOverride, verbose }) {
       if (verbose) {
         vlog(`→ Inspect YT: "${v.title}" (${v.durationMs || '?'}ms)  channel="${v.channelTitle}"`);
       }
-      // Already mapped?
       const mappedSp = reverseMap.get(v.id);
       if (mappedSp) {
         if (spTrackSet.has(mappedSp)) {
           vlog('    already mapped & present on Spotify — skip');
-          continue; // already present
+          continue;
         } else {
           vlog(`    mapped-but-missing on Spotify → plan ADD spotify:track:${mappedSp}`);
           plan.push({ v, action: 'add', spTrackId: mappedSp, reason: 'mapped-but-missing' });
@@ -506,14 +515,12 @@ async function runYt2Sp({ dryRun, recentLimitOverride, verbose }) {
         }
       }
 
-      // soft dupe check in Spotify playlist
       const softDup = findSoftDupeInSpotify(v, spItemsAll, { verbose, log: msg => vlog(msg) });
       if (softDup) {
         plan.push({ v, action: 'map-only', spTrackId: softDup.id, reason: 'soft-dup-in-playlist' });
         continue;
       }
 
-      // search Spotify (K=5 → escalate 10) with full debug
       const { best, reason, inspected, escalated, score } =
         await findBestSpotifyForYouTubeVideo(sp, v, {
           slackSec: DEFAULT_DURATION_SLACK_SEC,
@@ -536,7 +543,6 @@ async function runYt2Sp({ dryRun, recentLimitOverride, verbose }) {
       }
     }
 
-    // Show plan
     if (plan.length) {
       for (const p of plan) {
         const labelEsc = p.escalated ? ' (escalated to 10)' : '';
@@ -553,7 +559,6 @@ async function runYt2Sp({ dryRun, recentLimitOverride, verbose }) {
       log('  (Nothing to do)');
     }
 
-    // Apply — add **backwards** (oldest→newest)
     if (!dryRun) {
       const adds = plan.filter(p => p.action === 'add');
       const maps = plan.filter(p => p.action === 'map-only');
@@ -562,7 +567,7 @@ async function runYt2Sp({ dryRun, recentLimitOverride, verbose }) {
         try {
           await addTracksToPlaylist(sp, spId, [p.spTrackId]);
           spTrackSet.add(p.spTrackId);
-          cache.map[p.spTrackId] = p.v.id; // record mapping
+          cache.map[p.spTrackId] = p.v.id;
           log(`  ✔ Added → spotify:track:${p.spTrackId}`);
         } catch (e) {
           log(`  ! Failed to add ${p.v.title}: ${e.message}`);
@@ -578,7 +583,6 @@ async function runYt2Sp({ dryRun, recentLimitOverride, verbose }) {
         }
       }
 
-      // Update baseline: mark all current Spotify tracks as seen
       const seen = new Set(cache.seenTrackIds || []);
       const newSeen = Array.from(new Set([
         ...seen,
@@ -595,17 +599,18 @@ async function runYt2Sp({ dryRun, recentLimitOverride, verbose }) {
   }
 }
 
-// ====================== MAIN ======================
 (async () => {
   const dryRun = args.includes('--dry-run');
   const verbose = args.includes('--verbose');
+  const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
+
+  const cliPlaylistFilter = parsePlaylistFilter();
+  const cliPairs = cliPlaylistFilter ? filterPairs(CONFIG.pairs, cliPlaylistFilter) : null;
 
   let mode = parseModeFromArgs();
-  
-  // Interactive loop - keep showing menu until user exits
+
   while (true) {
     if (!mode) {
-      const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
       mode = isInteractive ? await promptMenu() : MODES.SP2YT;
     }
 
@@ -616,28 +621,36 @@ async function runYt2Sp({ dryRun, recentLimitOverride, verbose }) {
 
     if (mode === MODES.SPOTIFY_TOKEN) {
       await runSpotifyTokenScript();
-      mode = null; // Reset to show menu again
+      mode = null;
       continue;
     } else if (mode === MODES.YOUTUBE_TOKEN) {
       await runYouTubeTokenScript();
-      mode = null; // Reset to show menu again
+      mode = null;
       continue;
-    } else if (mode === MODES.SP2YT) {
-      await runSp2Yt({ dryRun, verbose });
+    }
+
+    let pairs;
+    if (cliPairs) {
+      pairs = cliPairs;
+    } else if (isInteractive) {
+      pairs = await promptPlaylistMenu(CONFIG.pairs);
+    } else {
+      pairs = CONFIG.pairs;
+    }
+
+    if (mode === MODES.SP2YT) {
+      await runSp2Yt({ dryRun, verbose, pairs });
     } else if (mode === MODES.YT2SP) {
-      await runYt2Sp({ dryRun, verbose });
+      await runYt2Sp({ dryRun, verbose, pairs });
     } else if (mode === MODES.BOTH) {
-      // 1) Run SP→YT
-      const { addedCount } = await runSp2Yt({ dryRun, verbose });
-      // 2) Bump the YT→SP recent window by the number of *actual* additions
+      // Run SP→YT first, then bump the YT→SP window by actual additions from the first leg.
+      const { addedCount } = await runSp2Yt({ dryRun, verbose, pairs });
       const bumpedWindow = RECENT_YOUTUBE_LIMIT + (addedCount || 0);
-      await runYt2Sp({ dryRun, recentLimitOverride: bumpedWindow, verbose });
+      await runYt2Sp({ dryRun, recentLimitOverride: bumpedWindow, verbose, pairs });
     }
 
     console.log('\nDone.');
-    
-    // If mode was passed via CLI args, exit after one run
-    // Otherwise reset to show menu again
+
     if (parseModeFromArgs()) {
       break;
     }

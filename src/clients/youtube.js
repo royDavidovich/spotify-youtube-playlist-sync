@@ -11,8 +11,17 @@ function toMsFromISO8601(iso) {
   return ((h * 60 + min) * 60 + sec) * 1000;
 }
 
+// e.g. "Closer (feat. Halsey)" → "Closer"
+function stripFeaturing(title) {
+  return title
+    .replace(/\s*[\(\[](feat|ft|featuring|with)\.?\s+[^\)\]]+[\)\]]/gi, '') // (feat. X) / [ft. X]
+    .replace(/\s+(?:feat|ft|featuring)\.?\s+.+$/i, '')                       // trailing feat. X
+    .trim();
+}
+
 function hasAllTitleTokens(spotifyTitle, ytTitle) {
-  const need = new Set(tokens(spotifyTitle));
+  // Strip featuring info so "(feat. X)" doesn't become a required token.
+  const need = new Set(tokens(stripFeaturing(spotifyTitle)));
   if (need.size === 0) return true;
   const have = new Set(tokens(ytTitle));
   for (const t of need) if (!have.has(t)) return false;
@@ -28,51 +37,40 @@ function isShortVideo(trackMs, candMs) {
 }
 
 const VARIANT_TOKENS = ['live','acoustic','remix','remaster','clean','explicit','radio edit'];
+// Language-specific subtitle words (legendado, subtitulado, paroles…) are not listed here —
+// they're caught structurally by the pipe check in violatesVersionRules instead.
 const DISALLOWED_TOKENS = [
   'cover','karaoke','sped up','speed up','nightcore','slowed','8d','8d audio','loop','extended',
   'reaction','compilation','mix','full album','tribute','fanmade','edit','reverb','bass boosted',
-  // Multilingual lyrics/subtitle markers
-  'letra','letras',     // Spanish/Portuguese for "lyrics"
-  'subtitulado',        // Spanish for "subtitled"
-  'paroles'             // French for "lyrics"
 ];
 
 const LYRICS_RE = /\blyrics?\b/;
 
-// Build word-boundary regexes for DISALLOWED_TOKENS so that e.g. "mix" doesn't
-// false-match inside "remix" (which is an allowed variant, not a disallowed one).
+// Word-boundary regexes prevent "mix" from false-matching inside "remix".
 function makeWordBoundaryRegex(phrase) {
   const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
   return new RegExp(`\\b${escaped}\\b`);
 }
 const DISALLOWED_REGEXES = DISALLOWED_TOKENS.map(makeWordBoundaryRegex);
 
-function violatesVersionRules(spotifyTitle, ytTitle) {
-  // Use normForVersionCheck (not norm) so that version keywords like "lyrics"
-  // and "remaster" are preserved — norm() strips them before we can test for them.
-  // Only check the YT title, not the description: descriptions are long and cause
-  // false positives (e.g., a description mentioning "remix" on a studio track).
-
-  // Check raw (pre-normalized) title for the YouTube subtitle-video convention:
-  // "Song |sub.español", "Song |subs english", etc. The pipe + "sub" pattern
-  // is effectively always a fan-made subtitle/lyrics upload; official tracks never use it.
-  if (/\|\s*subs?\b/i.test(ytTitle) && !/\|\s*subs?\b/i.test(spotifyTitle)) return true;
+// trusted = artist's own channel / VEVO / Topic; relaxes pipe and lyric checks.
+function violatesVersionRules(spotifyTitle, ytTitle, { trusted = false } = {}) {
+  // Pipe in YT title = fan-made subtitle/translation video (structural signal, any language).
+  if (!trusted && /\|/.test(ytTitle) && !/\|/.test(spotifyTitle)) return true;
 
   const st = normForVersionCheck(spotifyTitle);
   const yt = normForVersionCheck(ytTitle);
 
   const allowed = new Set();
   for (const v of VARIANT_TOKENS) if (st.includes(v)) allowed.add(v);
-
   for (const v of VARIANT_TOKENS) {
     if (yt.includes(v) && !allowed.has(v)) return true;
   }
-  // Use word-boundary regex for disallowed tokens so "mix" doesn't falsely match
-  // inside "remix" (which is an allowed variant already handled above).
   for (const re of DISALLOWED_REGEXES) {
     if (re.test(yt) && !re.test(st)) return true;
   }
-  if (LYRICS_RE.test(yt) && !LYRICS_RE.test(st)) return true;
+  // Official lyric videos from the artist's channel are audio-identical to the Spotify track.
+  if (!trusted && LYRICS_RE.test(yt) && !LYRICS_RE.test(st)) return true;
 
   return false;
 }
@@ -131,13 +129,12 @@ function categoryBonus(categoryId) {
   return categoryId === '10' ? 0.3 : 0.0;
 }
 
-// Returns the name of the first failing filter, or null if the candidate passes all.
-// Used both by passesHardFilters and by the verbose rejection log.
 function filterReason(spItem, cand, slackSec) {
   if (durationCloseness(spItem.durationMs, cand.durationMs, slackSec) === 0) return 'duration_out_of_range';
   if (isShortVideo(spItem.durationMs, cand.durationMs)) return 'short_video';
-  if (violatesVersionRules(spItem.title, cand.title)) return 'version_mismatch';
   const primary = spItem.artists?.[0] || '';
+  const trusted = trustScore(primary, cand.channelTitle) >= 2.2; // artist channel / VEVO / Topic
+  if (violatesVersionRules(spItem.title, cand.title, { trusted })) return 'version_mismatch';
   if (!artistAlignment(primary, cand.title, cand.channelTitle)) return 'artist_not_aligned';
   if (!hasAllTitleTokens(spItem.title, cand.title)) return 'missing_title_tokens';
   return null;
@@ -156,11 +153,9 @@ function scoreCandidate(spItem, cand, slackSec) {
   const sType = contentTypeScore(cand.title, cand.channelTitle);
   const sPop = popularityScore(cand.viewCount, cand.publishedAt);
   const sCat = categoryBonus(cand.categoryId);
-  // Secondary defence: penalise lyrics videos that slipped past the hard filter
-  // (e.g. "lyrics" only in the description, not the title).
   const ytHasLyrics = LYRICS_RE.test((cand.title || '').toLowerCase());
   const spHasLyrics = LYRICS_RE.test((spItem.title || '').toLowerCase());
-  const sLyrics = (ytHasLyrics && !spHasLyrics) ? -0.5 : 0;
+  const sLyrics = (ytHasLyrics && !spHasLyrics) ? -0.5 : 0; // penalise lyric videos that slipped past the hard filter
   return (sTrust * 2.0) + (sTitle * 1.6) + (sArtist * 1.0) + (sDur * 1.4) + (sType * 0.6) + (sPop * 0.4) + sCat + sLyrics;
 }
 
@@ -205,27 +200,37 @@ async function getYouTubePlaylistItems(youtube, playlistId) {
 
 async function findBestYouTubeForSpotifyTrack(youtube, spItem, { slackSec = 7, verbose = false, log = console.log } = {}) {
   const primaryArtist = spItem.artists?.[0] || '';
-  const q = `${primaryArtist} ${spItem.title}`.trim();
+  const coreTitle = stripFeaturing(spItem.title);
+  const q = `${primaryArtist} ${coreTitle}`.trim();
 
-  // Intelligibility guard: if the query isn't usable, skip (favor false negatives)
   if (!hasUsableTokens(q)) {
     if (verbose) log(`    SP→YT guard: unintelligible_query → skip for "${spItem.title}"`);
     return { best: null, reason: 'unintelligible_query', inspected: 0, escalated: false };
   }
 
+  // Two queries: base + "official"-biased. Each returns a different result set from YouTube.
+  const q2 = `${q} official`.trim();
+
   if (verbose) {
     log(`    SP→YT debug:`);
     log(`      track="${spItem.title}"  artist="${primaryArtist}"`);
-    log(`      query="${q}"`);
+    log(`      queries: "${q}" | "${q2}"`);
   }
 
-  const search = await youtube.search.list({
-    part: ['snippet'],
-    q,
-    type: ['video'],
-    maxResults: 10
-  });
-  const order = (search.data.items || []).map(x => x.id?.videoId).filter(Boolean);
+  const seenIds = new Set();
+  const order = [];
+  for (const query of [q, q2]) {
+    const search = await youtube.search.list({
+      part: ['snippet'],
+      q: query,
+      type: ['video'],
+      maxResults: 10
+    });
+    const ids = (search.data.items || []).map(x => x.id?.videoId).filter(Boolean);
+    for (const id of ids) {
+      if (!seenIds.has(id)) { seenIds.add(id); order.push(id); }
+    }
+  }
   if (!order.length) return { best: null, reason: 'no_search_results', inspected: 0, escalated: false };
 
   const details = await youtube.videos.list({
@@ -252,12 +257,12 @@ async function findBestYouTubeForSpotifyTrack(youtube, spItem, { slackSec = 7, v
   let pool = all.slice(0, 5).filter(c => passesHardFilters(spItem, c, slackSec));
   let escalated = false;
   if (pool.length === 0) {
-    pool = all.slice(0, 10).filter(c => passesHardFilters(spItem, c, slackSec));
+    pool = all.slice(0, 15).filter(c => passesHardFilters(spItem, c, slackSec));
     escalated = true;
   }
 
   if (verbose) {
-    const inspected = escalated ? all.slice(0, 10) : all.slice(0, 5);
+    const inspected = escalated ? all.slice(0, 15) : all.slice(0, 5);
     for (const c of inspected) {
       const reason = filterReason(spItem, c, slackSec);
       if (reason) {
@@ -265,11 +270,11 @@ async function findBestYouTubeForSpotifyTrack(youtube, spItem, { slackSec = 7, v
         log(`      ✗ "${c.title}" channel="${c.channelTitle}"  Δms=${durDelta}  ← ${reason}`);
       }
     }
-    log(`      filtered pool: ${pool.length}${escalated ? ' (escalated to 10)' : ''}`);
+    log(`      filtered pool: ${pool.length}${escalated ? ' (escalated to 15)' : ''}`);
   }
 
   if (pool.length === 0) {
-    return { best: null, reason: 'no_candidate_passed_filters', inspected: escalated ? Math.min(10, all.length) : Math.min(5, all.length), escalated };
+    return { best: null, reason: 'no_candidate_passed_filters', inspected: escalated ? Math.min(15, all.length) : Math.min(5, all.length), escalated };
   }
 
   const scored = pool
@@ -285,10 +290,9 @@ async function findBestYouTubeForSpotifyTrack(youtube, spItem, { slackSec = 7, v
 
   const best = scored[0]?.c || null;
   const bestScore = scored[0]?.s ?? -Infinity;
-  return { best, reason: best ? 'ok' : 'no_best', inspected: escalated ? Math.min(10, all.length) : Math.min(5, all.length), escalated, score: bestScore };
+  return { best, reason: best ? 'ok' : 'no_best', inspected: escalated ? Math.min(15, all.length) : Math.min(5, all.length), escalated, score: bestScore };
 }
 
-// ---------- Soft duplicate detection in existing YT playlist ----------
 function relaxedDurationOk(trackMs, candMs) {
   if (!trackMs || !candMs) return false;
   const slackMs = Math.max(12000, Math.floor(0.04 * trackMs)); // max(12s, 4% of track)
@@ -299,31 +303,26 @@ function softArtistAlign(primaryArtist, ytTitle, ytChannel) {
   const a = norm(primaryArtist);
   const t = norm(ytTitle);
   const c = norm(ytChannel);
-  return t.includes(a) || c.includes(a); // looser than hard filter
+  return t.includes(a) || c.includes(a);
 }
 
 function findSoftDupeInPlaylist(spItem, ytPlaylistItems, { jaccardMin = 0.45 } = {}) {
   const primary = spItem.artists?.[0] || '';
   const spTitle = spItem.title || '';
-  // If the Spotify title+artist is unintelligible, better skip dupe detection.
   if (!hasUsableTokens(primary, spTitle)) return null;
 
   let best = null;
   let bestScore = -Infinity;
 
   for (const v of ytPlaylistItems) {
-    // relaxed duration + loose artist + moderate title overlap
     if (!relaxedDurationOk(spItem.durationMs, v.durationMs)) continue;
     if (!softArtistAlign(primary, v.title, v.channelTitle)) continue;
-
     const titleSim = jaccardTitleLocal(spTitle, v.title);
     if (titleSim < jaccardMin) continue;
-
-    // Choose the most trusted among matches
     const score = trustScore(primary, v.channelTitle) * 2 + titleSim;
     if (score > bestScore) { best = v; bestScore = score; }
   }
-  return best; // { id, title, channelTitle, ... } or null
+  return best;
 }
 
 async function insertIntoPlaylist(youtube, playlistId, videoId) {
@@ -340,7 +339,6 @@ async function insertIntoPlaylist(youtube, playlistId, videoId) {
 
 module.exports = {
   getYouTubePlaylistItems,
-  // SP→YT exports:
   findBestYouTubeForSpotifyTrack,
   insertIntoPlaylist,
   findSoftDupeInPlaylist,

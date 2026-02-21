@@ -1,6 +1,5 @@
 const { norm, normForVersionCheck, tokens, jaccardTitle, hasUsableTokens } = require('../util/text');
 
-// Canonicalize a Spotify playlist item (unchanged)
 function canonicalFromPlaylistItem(it) {
   const t = it.track;
   if (!t) return null;
@@ -14,7 +13,6 @@ function canonicalFromPlaylistItem(it) {
   };
 }
 
-// Accept a few friendly aliases for Liked Songs
 function isLikedSongsId(id) {
   if (!id) return false;
   const x = String(id).toLowerCase().trim();
@@ -22,12 +20,10 @@ function isLikedSongsId(id) {
 }
 
 async function getAllPlaylistItems(sp, playlistId) {
-  // Special-case: Liked Songs use a different API (saved tracks), not playlist tracks
   if (isLikedSongsId(playlistId)) {
     let items = [];
     let offset = 0;
     while (true) {
-      // getMySavedTracks paginates at 50
       const res = await sp.getMySavedTracks({ limit: 50, offset });
       const batch = res.body.items || [];
       items = items.concat(batch);
@@ -37,7 +33,6 @@ async function getAllPlaylistItems(sp, playlistId) {
     return items.map(canonicalFromPlaylistItem).filter(Boolean);
   }
 
-  // Regular playlist
   let items = [];
   let offset = 0;
   while (true) {
@@ -50,7 +45,6 @@ async function getAllPlaylistItems(sp, playlistId) {
   return items.map(canonicalFromPlaylistItem).filter(Boolean);
 }
 
-// ---------- Helpers for YT → SP ----------
 function relaxedDurationOk(trackMs, candMs) {
   if (!trackMs || !candMs) return false;
   const slackMs = Math.max(12000, Math.floor(0.04 * trackMs)); // max(12s, 4%)
@@ -63,7 +57,6 @@ function durationClose(trackMs, candMs, slackSec = 7) {
   return Math.abs(trackMs - candMs) <= slack;
 }
 
-// Extract a reliable artist name from the channel, when possible
 function extractArtistFromChannel(channelTitle) {
   const t = channelTitle || '';
   const m = t.match(/^(.*)\s+-\s+topic$/i); // "Artist - Topic"
@@ -77,15 +70,14 @@ function hasArtistMarkers(s) {
   return /(?:\s|^)(?:feat|ft|with|con|x|y)(?:\s|$)/i.test(x) || x.includes('&') || x.includes(',');
 }
 
-// Decide orientation for titles that contain a dash/en-dash
-// Returns { titleCore, artistSide, orientation }
+// Returns { titleCore, artistSide, orientation } — decides which side of a dash is the artist.
 function smartSplitArtistTitle(ytTitle, channelTitle) {
   const raw = ytTitle || '';
   const parts = raw.split(/[–—-]{1,3}/); // -, – or —
   if (parts.length < 2) return { titleCore: raw.trim(), artistSide: null, orientation: 'none' };
 
   const left  = parts[0].trim();
-  const right = raw.slice(parts[0].length + 1).trim(); // keep everything after first dash
+  const right = raw.slice(parts[0].length + 1).trim();
 
   const channelArtist = extractArtistFromChannel(channelTitle || '');
   const chanTokens = channelArtist ? new Set(tokens(channelArtist)) : null;
@@ -150,24 +142,22 @@ function artistTokenSet(name) {
 }
 
 function artistAligned(artistGuess, spTrack) {
-  if (!artistGuess) return true; // if unknown/untrusted, don't block
+  if (!artistGuess) return true;
   const guessSet = artistTokenSet(artistGuess);
   for (const a of (spTrack.artists || [])) {
     const aSet = artistTokenSet(a.name || a);
     for (const tok of guessSet) {
-      if (aSet.has(tok)) return true; // word-level overlap, not substring
+      if (aSet.has(tok)) return true;
     }
   }
   return false;
 }
 
-// Heuristic: detect Spotify results that look like "music video" entries
 function isMusicVideoName(name) {
   const x = norm(name);
   return /\bmusic\s*video\b/.test(x) || /\bofficial\s*video\b/.test(x) || /\bvideo\s+edit\b/.test(x);
 }
 
-// Exact (order-insensitive) title token equality
 function isExactTitleMatch(coreTitle, spName) {
   const A = new Set(tokens(coreTitle));
   const B = new Set(tokens(spName));
@@ -177,9 +167,7 @@ function isExactTitleMatch(coreTitle, spName) {
   return true;
 }
 
-// ---------- Soft duplicate detection in Spotify playlist ----------
 function findSoftDupeInSpotify(ytItem, spPlaylistItems, { verbose = false, log = console.log } = {}) {
-  // If YT title is unintelligible, don't attempt soft-dupe; let the main flow decide (and likely skip).
   const ytTitle = ytItem.title || '';
   if (!hasUsableTokens(ytTitle)) return null;
 
@@ -189,7 +177,6 @@ function findSoftDupeInSpotify(ytItem, spPlaylistItems, { verbose = false, log =
   for (const it of spPlaylistItems) {
     if (!relaxedDurationOk(it.durationMs, ytItem.durationMs)) continue;
 
-    // If we trust the artist guess, require match for non-MV titles; allow MV titles through without artist gate
     const mvTitle = isMusicVideoName(it.title || '');
     const artistOK = trusted ? (mvTitle ? true : artistAligned(artistGuess, { artists: it.artists?.map(n => ({ name: n })) || [] })) : true;
     if (!artistOK) continue;
@@ -205,15 +192,13 @@ function findSoftDupeInSpotify(ytItem, spPlaylistItems, { verbose = false, log =
   if (verbose && best) {
     log(`      ↳ soft-dupe on Spotify: "${best.title}" by ${best.artists?.join(', ') || 'unknown'} (score≈${bestScore.toFixed(2)})`);
   }
-  return best; // canonical sp item or null
+  return best;
 }
 
-// ---------- Main: find best Spotify track for a YT video ----------
 async function findBestSpotifyForYouTubeVideo(sp, ytItem, { slackSec = 7, verbose = false, log = console.log } = {}) {
   const split = smartSplitArtistTitle(ytItem.title || '', ytItem.channelTitle || '');
   const titleCore = split.titleCore || (ytItem.title || '');
 
-  // Intelligibility guard: if the core title isn't usable, skip
   if (!hasUsableTokens(titleCore)) {
     if (verbose) log(`    YT→SP guard: unintelligible_query → skip`);
     return { best: null, reason: 'unintelligible_query', inspected: 0, escalated: false };
@@ -221,7 +206,6 @@ async function findBestSpotifyForYouTubeVideo(sp, ytItem, { slackSec = 7, verbos
 
   const { artistGuess, trusted } = deriveArtistGuess(ytItem.title || '', ytItem.channelTitle || '');
 
-  // Build queries in order of confidence, but only include intelligible ones
   const queries = [];
   if (trusted && artistGuess && hasUsableTokens(artistGuess, titleCore)) queries.push(`${artistGuess} ${titleCore}`);
   if (!trusted && split.artistSide && hasUsableTokens(split.artistSide, titleCore)) queries.push(`${split.artistSide} ${titleCore}`);
@@ -238,7 +222,6 @@ async function findBestSpotifyForYouTubeVideo(sp, ytItem, { slackSec = 7, verbos
   const seenIds = new Set();
   let candidates = [];
 
-  // Aggregate up to 10 results per query
   for (const q of queries) {
     const res = await sp.searchTracks(q, { limit: 10 });
     const items = res.body.tracks?.items || [];
@@ -258,7 +241,7 @@ async function findBestSpotifyForYouTubeVideo(sp, ytItem, { slackSec = 7, verbos
     return {
       id: t.id,
       name: t.name,
-      artists: t.artists,             // array of { name }
+      artists: t.artists,
       duration_ms: t.duration_ms,
       popularity: t.popularity || 0,
       explicit: t.explicit
@@ -270,7 +253,6 @@ async function findBestSpotifyForYouTubeVideo(sp, ytItem, { slackSec = 7, verbos
   const hardFilter = (t) => {
     if (!durationClose(ytItem.durationMs, t.duration_ms, slackSec)) return false;
 
-    // Require version alignment (live/remix/acoustic/lyric/remaster)
     const sTokens = versionTokens(t.name || '');
     const versionMismatch =
       (ytTokens.hasLive && !sTokens.hasLive) ||
@@ -280,10 +262,7 @@ async function findBestSpotifyForYouTubeVideo(sp, ytItem, { slackSec = 7, verbos
       (ytTokens.hasRemaster && !sTokens.hasRemaster);
     if (versionMismatch) return false;
 
-    // Enforce artist alignment ONLY when we trust the guess AND the candidate is NOT an MV
     if (trusted && !isMusicVideoName(t.name || '') && !artistAligned(artistGuess, t)) return false;
-
-    // Title token coverage (YT core tokens should appear in Spotify name)
     if (!titleCoverageOk(titleCore, t.name || '')) return false;
 
     return true;
@@ -315,12 +294,10 @@ async function findBestSpotifyForYouTubeVideo(sp, ytItem, { slackSec = 7, verbos
     };
   }
 
-  // If there is an exact title match that is NOT an MV, prefer it outright.
+  // Prefer exact title match from non-MV entries.
   const exactNonMV = pool.filter(t => isExactTitleMatch(titleCore, t.name || '') && !isMusicVideoName(t.name || ''));
   if (exactNonMV.length) {
-    // tie-break: prefer artist-aligned candidates (when we have a trusted artist),
-    // then duration closeness, then popularity. Without the artist bonus, common
-    // single-word titles (e.g. "Love") could pick the wrong artist's track.
+    // tie-break: artist alignment, then duration closeness, then popularity
     let chosen = null, bestTie = -Infinity;
     for (const t of exactNonMV) {
       const artistBonus = (trusted && artistAligned(artistGuess, t)) ? 1 : 0;
@@ -339,7 +316,6 @@ async function findBestSpotifyForYouTubeVideo(sp, ytItem, { slackSec = 7, verbos
     };
   }
 
-  // Otherwise, score and choose best (MV gets a bump)
   const scored = pool.map(t => ({ t, sc: score(t) }))
                      .sort((a, b) => b.sc - a.sc);
 
@@ -361,25 +337,21 @@ async function findBestSpotifyForYouTubeVideo(sp, ytItem, { slackSec = 7, verbos
   };
 }
 
-// Convenience: add plain track IDs to a playlist, and check if it's for "liked songs" library 
 async function addTracksToPlaylist(sp, playlistId, trackIds) {
   if (!trackIds || trackIds.length === 0) return;
 
   if (isLikedSongsId(playlistId)) {
-    // Liked Songs uses the "Saved Tracks" API, not playlist adds
-    // Requires the "user-library-modify" scope
+    // Liked Songs requires "user-library-modify" scope
     await sp.addToMySavedTracks(trackIds);
     return;
   }
 
-  // Regular playlist add
   const uris = trackIds.map(id => `spotify:track:${id}`);
   await sp.addTracksToPlaylist(playlistId, uris);
 }
 
 module.exports = {
   getAllPlaylistItems,
-  // YT→SP exports:
   findSoftDupeInSpotify,
   findBestSpotifyForYouTubeVideo,
   addTracksToPlaylist
